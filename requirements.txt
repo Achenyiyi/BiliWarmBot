@@ -1,0 +1,13 @@
+# 温暖陪伴机器人依赖
+
+# B站API
+bilibili-api-python>=17.3.0
+
+# HTTP客户端
+httpx>=0.25.0
+
+# 异步数据库
+aiosqlite>=0.19.0
+
+# 配置管理
+python-dotenv>=1.0.0
