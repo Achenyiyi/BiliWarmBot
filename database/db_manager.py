@@ -184,7 +184,8 @@ class DatabaseManager:
             if row:
                 data = dict(row)
                 messages_json = data['messages']
-                data['messages'] = json.loads(messages_json) if messages_json else []
+                parsed = json.loads(messages_json) if messages_json else []
+                data['messages'] = parsed if parsed is not None else []
                 return data
             return None
     
@@ -199,7 +200,8 @@ class DatabaseManager:
             if row:
                 data = dict(row)
                 messages_json = data['messages']
-                data['messages'] = json.loads(messages_json) if messages_json else []
+                parsed = json.loads(messages_json) if messages_json else []
+                data['messages'] = parsed if parsed is not None else []
                 return data
             return None
     
@@ -215,7 +217,8 @@ class DatabaseManager:
             for row in rows:
                 data = dict(row)
                 messages_json = data['messages']
-                data['messages'] = json.loads(messages_json) if messages_json else []
+                parsed = json.loads(messages_json) if messages_json else []
+                data['messages'] = parsed if parsed is not None else []
                 result.append(data)
             return result
     
@@ -232,7 +235,8 @@ class DatabaseManager:
             for row in rows:
                 data = dict(row)
                 messages_json = data['messages']
-                data['messages'] = json.loads(messages_json) if messages_json else []
+                parsed = json.loads(messages_json) if messages_json else []
+                data['messages'] = parsed if parsed is not None else []
                 result.append(data)
             return result
     
@@ -242,7 +246,7 @@ class DatabaseManager:
         if not conv:
             return False
         
-        messages = conv['messages']
+        messages = conv.get('messages') or []
         message_data = {
             "role": role,
             "content": content,
@@ -267,7 +271,7 @@ class DatabaseManager:
         conv = await self.get_conversation(conv_id)
         if not conv:
             return []
-        return conv.get('messages', [])
+        return conv.get('messages') or []
     
     async def update_conversation_status(self, conv_id: int, status: str, 
                                          next_check_at: datetime = None,

@@ -164,23 +164,23 @@ class DeepSeekAnalyzer:
         if comments_context:
             context_section = f"\n视频下其他用户的讨论（了解评论区氛围）：\n{comments_context}\n"
         
-        unified_prompt = f"""你正在刷B站，看到了这条评论。
+        unified_prompt = f"""此时看到了一个让你比较在意的视频，以及其中的一条评论：
 
-视频：{video_title}
-内容：{video_summary}{context_section}
+视频标题：{video_title}
+视频内容：{video_summary}{context_section}
 
-评论：{comment_username}：{comment_content}{emergency_hint}
+用户评论：{comment_username}：{comment_content}{emergency_hint}
 
 任务：
 1. 分析情感类型（悲伤/焦虑/愤怒/孤独/绝望/无助/其他）
 2. 评估情感强度0.0-1.0（0.85+深度共情，0.70-0.85悲伤共情，0.55-0.70鼓励加油，0.40-0.55陪伴安慰，0.25-0.40温暖治愈，<0.25轻松幽默）
-3. 判断needs_comfort（严格标准）：
-   - true：用户表达真实情绪困扰，需要情感支持
-   - false：广告、玩梗、吐槽、发泄情绪、寻求建议、单纯分享、无实质内容
-4. 判断emergency（自杀/自残=true）
-5. 如needs_comfort=true，以warmbot的身份对该评论作出回复：
+3. 判断needs_comfort（严格标准，只看评论本身）：
+   - true：用户在评论中表达了自己的真实情绪困扰（如"我也很难过"、"我也经历过"、"感同身受"等）
+   - false：单纯支持UP主、广告、玩梗、吐槽、发泄情绪、寻求建议、无实质内容、与视频内容无关的普通评论
+4. 判断emergency（用户在评论中提到自杀/自残=true）
+5. 如needs_comfort=true，则对该评论作出回复：
 
-输出JSON：{{"emotion":"情感","sentiment_score":0.75,"needs_comfort":true/false,"emergency":true/false,"reply":"回复内容"}}"""
+输出JSON：{{"emotion":"情感类型","sentiment_score":0.75,"needs_comfort":true/false,"emergency":true/false,"reply":"回复内容"}}"""
 
         try:
             client = await self._get_client()
@@ -379,7 +379,7 @@ class DeepSeekAnalyzer:
         """生成后续回复"""
         history_text = "\n".join([
             f"{'对方' if item.get('role') == 'user' or item.get('speaker') == 'user' else '我'}：{item['content']}"
-            for item in conversation_history[-4:]
+            for item in (conversation_history or [])[-4:]
         ])
         
         context_section = ""
@@ -450,7 +450,7 @@ class DeepSeekAnalyzer:
         
         history_text = "\n".join([
             f"{'对方' if item.get('role') == 'user' or item.get('speaker') == 'user' else '我'}：{item['content']}"
-            for item in conversation_history[-3:]
+            for item in (conversation_history or [])[-3:]
         ])
         
         prompt = f"""你是"{bot_username}"，B站用户。判断是否继续回复。

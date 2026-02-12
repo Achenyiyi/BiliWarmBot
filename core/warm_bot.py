@@ -582,10 +582,12 @@ class WarmBot:
             sub_comments_result = await c.get_sub_comments(page_index=1, page_size=20)
             
             # 3. 解析子评论，检查是否有用户的新回复
-            sub_replies = sub_comments_result.get('replies', []) if isinstance(sub_comments_result, dict) else []
+            sub_replies = (sub_comments_result.get('replies') or []) if isinstance(sub_comments_result, dict) else []
             
             # 获取已记录的消息ID，避免重复处理
             existing_messages = await self.db.get_conversation_messages(conv['id'])
+            if existing_messages is None:
+                existing_messages = []
             # 统一转为字符串进行比较，避免 int/str 类型不匹配
             existing_rpics = {str(msg.get('rpid')) for msg in existing_messages if msg.get('rpid')}
             
@@ -599,14 +601,14 @@ class WarmBot:
                 rpid = reply.get('rpid')
                 rpid_str = str(rpid) if rpid else None
                 if rpid_str and rpid_str not in existing_rpics:
-                    user_mid = reply.get('member', {}).get('mid')
+                    user_mid = (reply.get('member') or {}).get('mid')
                     user_mid_str = str(user_mid) if user_mid else None
                     
                     # 排除机器人自己的回复
                     if user_mid_str and self.bot_uid and user_mid_str == str(self.bot_uid):
                         # 这是机器人自己的回复，记录rpid但不处理
                         await self.db.add_message(conv['id'], 'bot', 
-                                                  reply.get('content', {}).get('message', ''), 
+                                                  (reply.get('content') or {}).get('message', ''), 
                                                   rpid=rpid_str)
                         continue
                     
@@ -614,7 +616,7 @@ class WarmBot:
                     if user_mid_str and user_mid_str == str(conv.get('user_mid')):
                         parent_id_raw = reply.get('parent', 0)
                         # 提前获取用户名用于日志
-                        reply_username = reply.get('member', {}).get('uname', '用户')
+                        reply_username = (reply.get('member') or {}).get('uname', '用户')
                         # 检查是否直接回复机器人的最后一条消息
                         if last_bot_rpid and str(parent_id_raw) == last_bot_rpid:
                             new_user_replies.append({
@@ -632,14 +634,16 @@ class WarmBot:
                 latest_reply = latest_item['reply']
                 rpid_str = latest_item['rpid_str']
                 parent_id = latest_item['parent_id']
-                username = latest_reply.get('member', {}).get('uname', '用户')
-                content = latest_reply.get('content', {}).get('message', '')
+                username = (latest_reply.get('member') or {}).get('uname', '用户')
+                content = (latest_reply.get('content') or {}).get('message', '')
                 
                 await self._print(f"   💬 对话 {conv['id']}: 收到 {len(new_user_replies)} 条新回复")
                 
                 await self.db.add_message(conv['id'], 'user', content, rpid=rpid_str)
                 
                 messages = await self.db.get_conversation_messages(conv['id'])
+                if messages is None:
+                    messages = []
                 
                 await self._continue_conversation(
                     conv['id'], bvid, root_id, parent_id,
@@ -684,7 +688,9 @@ class WarmBot:
                 await self.db.close_conversation(conv['id'])
                 await self._print(f"   🗑️ 对话 {conv['id']}: 原评论已被删除，已关闭")
             else:
+                import traceback
                 self.logger.error(f"检查对话 {conv['id']} 失败: {e}")
+                self.logger.error(f"堆栈: {traceback.format_exc()}")
     
     # ========== 第三层：新视频处理 ==========
     
