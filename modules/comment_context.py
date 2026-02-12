@@ -271,19 +271,3 @@ class CommentContextFetcher:
             lines.append(line)
         
         return "\n".join(lines)
-
-
-# 便捷函数
-async def get_comments_context(
-    bvid: str,
-    credential: Credential,
-    max_comments: int = 50
-) -> str:
-    """
-    便捷函数：获取视频评论区上下文
-    
-    使用示例：
-        context = await get_comments_context("BV15eC5BBEA2", credential)
-    """
-    fetcher = CommentContextFetcher(credential)
-    return await fetcher.fetch_video_comments_context(bvid, max_comments)

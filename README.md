@@ -19,13 +19,13 @@
 | 优先级 | 场景类别 |
 |--------|----------|
 | 🔴 高 | 心理健康、原生家庭、失去 |
-| 🟡 中 | 职场压力、情感困扰、人生迷茫、漂泊在外 |
-| 🟢 低 | 学业压力、社交恐惧、经济困难、身体健康、年龄焦虑、生育育儿、外貌身材、婚姻家庭、网络暴力 |
+| 🟡 中 | 职场压力、情感困扰、人生迷茫、漂泊在外、学业压力 |
+| 🟢 低 | 社交恐惧、经济困难、年龄焦虑、身体健康、生育育儿、外貌身材、婚姻家庭、网络暴力 |
 
 **搜索策略：**
-- ⏰ **时间范围**：最近 1-7 天内的视频（可配置）
+- ⏰ **时间范围**：最近 1 天内的视频（可配置）
 - 📊 **智能配额**：按优先级分配搜索资源，确保高优先级场景覆盖
-- 🔍 **关键词轮换**：每场景最多使用 N 个关键词，避免过度搜索
+- � **两轮搜索**：第一轮确保每个场景至少 3 个视频，第二轮填充到目标总数
 - 📄 **分页获取**：每关键词获取多页结果
 - 🚫 **永久去重**：基于 SQLite 数据库的已处理视频去重
 
@@ -34,7 +34,7 @@
 **四重内容提取策略（按优先级）：**
 
 1. **UP主置顶评论** - UP主自己对视频的补充说明
-2. **B站官方AI总结** - 5分钟以上视频的AI生成摘要
+2. **B站官方AI总结** - 5分钟以上视频的AI生成摘要（包含章节要点、关键词）
 3. **视频字幕** - 自动下载并解析 CC 字幕
 4. **标题+描述** - 兜底方案
 
@@ -56,7 +56,7 @@
 
 **回复特征：**
 - 💭 **人格化**：模拟真实 B 站用户说话方式
-- 🎯 **结合上下文**：参考视频内容、UP主置顶评论
+- 🎯 **结合上下文**：参考视频内容、UP主置顶评论、评论区氛围
 - 📺 **视频细节**：提到视频中的具体情节
 - 💬 **情感共鸣**：先共情再建议
 - 📏 **长度控制**：10-50 字，符合 B 站评论习惯
@@ -85,17 +85,17 @@
 
 ### 🔄 对话跟进（多轮对话）
 
-**智能跟进策略**：
+**智能跟进策略：**
 - ⏰ **首次延迟**：回复后 30 分钟首次检查
 - 📈 **退避策略**：30min → 60min → 120min → 240min（指数退避）
 - 🎯 **精准跟踪**：只关注直接回复机器人的评论
-- 👥 **上下文感知**：收集评论区其他用户讨论作为 AI 参考
+- � **上下文感知**：收集评论区其他用户讨论作为 AI 参考
 - 🛑 **终止条件**：
   - 达到最大检查次数（8次）
   - 对话超时（24小时无响应）
   - 原评论被删除
 
-**时间调度特性**：
+**时间调度特性：**
 - 基于实际系统时间计算
 - 项目停止后重启也能保持正确间隔
 - 使用数据库记录下次检查时间，确保不遗漏检查
@@ -203,23 +203,33 @@ DEEPSEEK_API_KEY = "your-api-key-here"
 
 # B站 Cookie 配置（从浏览器开发者工具复制）
 BILIBILI_COOKIE = """SESSDATA=xxx; bili_jct=xxx; buvid3=xxx; DedeUserID=xxx; ..."""
+```
 
+编辑 `config/bot_config.py`：
+
+```python
 # 搜索配置
 SEARCH_CONFIG = {
-    "scan_interval_minutes": 20,      # 扫描间隔（分钟）
-    "max_videos_per_scan": 100,       # 每次扫描最大视频数
+    "max_videos_per_scan": 50,       # 每次扫描最大视频数
     "time_range_days": 1,             # 搜索时间范围（天）
-    "keyword_per_scene": 3,           # 每场景最多使用关键词数
 }
 
 # 评论配置
 COMMENT_CONFIG = {
-    "max_comments_per_hour": 100,     # 每小时最大评论数
-    "max_replies_per_video": 50,      # 每个视频最大回复数
-    "reply_interval_min": 3,          # 回复间隔最小值（秒）
-    "reply_interval_max": 5,          # 回复间隔最大值（秒）
-    "max_conversation_rounds": 10,    # 最大对话轮数
-    "conversation_timeout_hours": 48, # 对话超时时间（小时）
+    "max_replies_per_video": 5,      # 每个视频最大回复数
+}
+
+# 性能配置
+PERFORMANCE_CONFIG = {
+    "scan_interval_minutes": 5,         # 扫描间隔（分钟）
+}
+
+# 对话配置
+CONVERSATION_CONFIG = {
+    "conversation_retention_hours": 24,  # 对话保留时间（小时）
+    "max_check_count": 8,              # 最大检查次数
+    "backoff_base_minutes": 30,        # 指数退避基数（分钟）
+    "max_check_interval_minutes": 240,   # 最大检查间隔（分钟）
 }
 ```
 
@@ -248,7 +258,7 @@ python main.py
 
 ```python
 NEGATIVE_KEYWORDS = {
-    "心理健康": ["抑郁", "焦虑", "失眠", "崩溃", "想死", "自杀", "自残"],
+    "心理健康": ["抑郁", "焦虑", "失眠", "情绪崩溃", "想死", "自杀", "自残"],
     "原生家庭": ["原生家庭", "父母控制", "童年阴影", "情感忽视", "家暴"],
     "职场压力": ["996", "加班", "裁员", "失业", "职场PUA", "内卷"],
     # ... 更多场景
@@ -287,13 +297,10 @@ SCENARIO_EMOJIS = {
 
 | 限制项 | 默认值 | 说明 |
 |--------|--------|------|
-| 每小时评论 | 100 条 | 防止频繁操作触发风控 |
-| 每视频回复 | 50 条 | 避免过度打扰单个视频 |
-| 评论间隔 | 3-5 秒 | 模拟真人操作间隔 |
-| 扫描间隔 | 20 分钟 | 合理搜索频率 |
+| 每视频回复 | 5 条 | 避免过度打扰单个视频 |
+| 扫描间隔 | 5 分钟 | 合理搜索频率 |
 | 最大检查次数 | 8 次 | 对话跟进最大次数 |
 | 对话超时 | 24 小时 | 自动结束过期对话 |
-| AI 并发处理 | 10 个 | 控制 API 调用成本 |
 
 ### 紧急关键词检测
 
@@ -315,13 +322,13 @@ SCENARIO_EMOJIS = {
 **tracked_videos** - 视频追踪表
 ```sql
 CREATE TABLE tracked_videos (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    bvid TEXT UNIQUE NOT NULL,        -- 视频BV号
-    title TEXT NOT NULL,              -- 视频标题
-    category TEXT NOT NULL,           -- 情感场景分类
-    summary TEXT,                     -- 视频摘要
-    processed_at TIMESTAMP,           -- 处理时间
-    total_comments INTEGER DEFAULT 0  -- 评论总数
+    bvid TEXT PRIMARY KEY,
+    title TEXT,
+    total_comments INTEGER DEFAULT 0,
+    my_root_comment_id INTEGER,
+    last_check_at TIMESTAMP,
+    status TEXT DEFAULT 'active',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 ```
 
@@ -329,28 +336,29 @@ CREATE TABLE tracked_videos (
 ```sql
 CREATE TABLE conversations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    bvid TEXT NOT NULL,               -- 视频BV号
-    root_comment_id INTEGER NOT NULL, -- 根评论ID
-    user_mid INTEGER NOT NULL,        -- 用户MID
-    username TEXT NOT NULL,           -- 用户名
-    messages TEXT,                    -- 对话消息JSON
-    status TEXT DEFAULT 'new',        -- 状态：new/replied/closed
-    check_count INTEGER DEFAULT 0,    -- 检查次数
-    next_check_at TIMESTAMP,          -- 下次检查时间
-    last_reply_at TIMESTAMP,          -- 最后回复时间
-    close_reason TEXT                 -- 关闭原因
+    bvid TEXT NOT NULL,
+    root_comment_id INTEGER,
+    user_mid INTEGER,
+    username TEXT,
+    messages TEXT DEFAULT '[]',
+    status TEXT DEFAULT 'new',
+    last_reply_at TIMESTAMP,
+    next_check_at TIMESTAMP,
+    check_count INTEGER DEFAULT 0,
+    close_reason TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 ```
 
 **bot_comments** - 机器人评论记录表
 ```sql
 CREATE TABLE bot_comments (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    comment_id INTEGER UNIQUE,        -- 评论ID
-    bvid TEXT NOT NULL,               -- 视频BV号
-    root_id INTEGER,                  -- 根评论ID
-    content TEXT,                     -- 评论内容
-    created_at TIMESTAMP              -- 创建时间
+    comment_id INTEGER PRIMARY KEY,
+    bvid TEXT NOT NULL,
+    root_id INTEGER,
+    content TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 ```
 

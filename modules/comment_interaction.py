@@ -315,7 +315,6 @@ class CommentInteractor:
                          reply_to_content: str = None) -> Optional[int]:
         """发送评论回复"""
         try:
-            # 简化回复格式：只保留"回复 @用户名"，不引用原话
             if reply_to_uname:
                 full_content = f"回复 @{reply_to_uname} :\n{content}"
             else:
@@ -330,42 +329,78 @@ class CommentInteractor:
                 credential=self.credential
             )
             
-            if isinstance(result, dict):
-                code = result.get("code")
-                if code == 0 or "success_toast" in result:
-                    rpid = result.get("data", {}).get("rpid") if result.get("data") else result.get("rpid")
-                    if rpid:
-                        return rpid
-                    else:
-                        logger.warning(f"评论发送成功但未返回rpid: {result}")
-                        return None
-                else:
-                    error_msg = result.get('message', '未知错误')
-                    error_code = result.get('code', '未知错误码')
-                    logger.error(f"发送评论失败: 错误码 {error_code}, {error_msg[:50]}")
-                    
-                    if error_code == 12051:
-                        logger.warning("该评论已存在相同内容")
-                    
-                    return None
-            else:
-                logger.error(f"发送评论返回格式异常: {type(result)}")
+            if result is None:
+                logger.error("发送评论返回None，可能是网络错误或凭证问题")
                 return None
             
+            if not isinstance(result, dict):
+                logger.error(f"发送评论返回格式异常: type={type(result)}, value={result}")
+                return None
+            
+            rpid = result.get("rpid")
+            if rpid:
+                logger.info(f"评论发送成功: rpid={rpid}")
+                return rpid
+            
+            code = result.get("code")
+            if code is not None:
+                if code == 0:
+                    data = result.get("data")
+                    if isinstance(data, dict):
+                        rpid = data.get("rpid")
+                        if rpid:
+                            logger.info(f"评论发送成功: rpid={rpid}")
+                            return rpid
+                        logger.warning(f"评论发送成功但未返回rpid: data={data}")
+                        return None
+                    logger.warning(f"评论发送成功但data格式异常: type={type(data)}")
+                    return None
+                
+                error_msg = result.get('message', '未知错误')
+                self._handle_comment_error(code, error_msg)
+                return None
+            
+            logger.error(f"返回数据格式无法识别: {list(result.keys())[:10]}")
+            return None
+            
         except Exception as e:
-            error_msg = str(e)
-            if "412" in error_msg:
-                logger.warning(f"发送评论被风控(412): {error_msg[:50]}")
-            elif "-401" in error_msg:
-                logger.error(f"登录失效: {error_msg[:50]}")
-            elif "-403" in error_msg:
-                logger.warning(f"发送评论过于频繁: {error_msg[:50]}")
+            self._handle_comment_exception(str(e))
             return None
     
-    def check_emergency(self, content: str, emergency_keywords: List[str]) -> bool:
-        """检测紧急关键词"""
-        content_lower = content.lower()
-        for keyword in emergency_keywords:
-            if keyword in content_lower:
-                return True
-        return False
+    def _handle_comment_error(self, code: int, message: str):
+        """处理评论发送错误码"""
+        error_handlers = {
+            12002: ("评论已被删除", "warning"),
+            12022: ("评论不存在或已被删除", "warning"),
+            12051: ("评论内容重复", "warning"),
+            12053: ("评论审核中", "info"),
+            12061: ("评论已关闭", "warning"),
+            -101: ("账号未登录", "error"),
+            -400: ("请求错误", "error"),
+            -403: ("权限不足", "warning"),
+            -500: ("服务器错误", "error"),
+        }
+        
+        handler = error_handlers.get(code)
+        if handler:
+            msg, level = handler
+            log_func = logger.warning if level == "warning" else (logger.info if level == "info" else logger.error)
+            log_func(f"发送评论失败 [{code}]: {msg} - {message[:30]}")
+        else:
+            logger.error(f"发送评论失败: 错误码 {code}, {message[:50]}")
+    
+    def _handle_comment_exception(self, error_msg: str):
+        """处理评论发送异常"""
+        patterns = [
+            ("412", "被风控", logger.warning),
+            ("-401", "登录失效", logger.error),
+            ("-403", "操作过于频繁", logger.warning),
+            ("timeout", "请求超时", logger.warning),
+        ]
+        
+        for pattern, desc, log_func in patterns:
+            if pattern in error_msg.lower():
+                log_func(f"发送评论{desc}: {error_msg[:50]}")
+                return
+        
+        logger.error(f"发送评论异常: {error_msg[:50]}")

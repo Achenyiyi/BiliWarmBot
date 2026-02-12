@@ -1,25 +1,19 @@
 """
-温暖陪伴机器人核心模块 - 柯南优化版 v2.0
+温暖陪伴机器人核心模块
 
-架构优化：
-1. 防护层集成 - 熔断器、限流器、重试机制
-2. 资源管理 - 上下文管理器确保正确释放
-3. 健康检查 - 启动时验证关键依赖
-4. 优雅降级 - API不可用时保持核心功能
+功能：
+1. 防护层集成（熔断器、限流器、重试机制）
+2. 资源管理（上下文管理器）
+3. 健康检查
+4. 优雅降级
 
 核心流程：
-1. 检查需要跟进的对话（兜底）- 仅检查 replied 状态
-2. 搜索新视频（新任务）
-
-重要区分机制：
-✓ 机器人只处理它主动发起的对话（有对话记录）
-✗ 不会干扰用户本人的正常B站社交互动
+1. 检查需要跟进的对话
+2. 搜索新视频
 """
 
 import asyncio
 import logging
-import random
-import re
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -44,8 +38,6 @@ from modules.deepseek_analyzer import DeepSeekAnalyzer
 from modules import VideoContentExtractor, CommentInteractor
 from modules.comment_context import CommentContextFetcher
 
-# 导入防护层
-from utils import CircuitBreaker, RateLimiter, RetryHandler
 from utils.circuit_breaker import bilibili_breaker, deepseek_breaker
 from utils.rate_limiter import bilibili_limiter, deepseek_limiter, comment_limiter
 from utils.retry_handler import bilibili_retry, deepseek_retry
@@ -53,13 +45,13 @@ from utils.retry_handler import bilibili_retry, deepseek_retry
 
 class WarmBot:
     """
-    B站温暖陪伴机器人 - 柯南优化版
+    B站温暖陪伴机器人
     
-    特性：
-    - 防护层保护：熔断、限流、重试
-    - 资源管理：上下文管理器确保释放
-    - 健康检查：启动时验证依赖
-    - 优雅降级：API故障时保持运行
+    功能：
+    - 防护层保护（熔断、限流、重试）
+    - 资源管理
+    - 健康检查
+    - 优雅降级
     """
     
     def __init__(self):
@@ -215,7 +207,7 @@ class WarmBot:
         return all_passed
     
     def _setup_logging(self) -> logging.Logger:
-        """配置日志 - 优化版"""
+        """配置日志"""
         LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
         
         formatter = logging.Formatter(
@@ -331,15 +323,13 @@ class WarmBot:
     
     async def _continue_conversation(self, conv_id: int, bvid: str, root_id: int,
                                     parent_id: int, username: str, content: str,
-                                    messages: List[Dict]):
-        """继续对话 - 生成回复（带评论区上下文）"""
+                                    messages: List[Dict], check_count: int = 0):
+        """继续对话 - 生成回复"""
         await self._print(f"   💬 {username}: {content[:40]}...")
         
-        # 获取视频信息
         video_info = await self.db.get_tracked_video(bvid)
         video_title = video_info['title'] if video_info else "未知视频"
         
-        # 获取视频摘要
         video_summary = ""
         try:
             v = video.Video(bvid=bvid, credential=self.credential)
@@ -350,39 +340,49 @@ class WarmBot:
         except Exception:
             pass
         
-        # 获取评论区上下文（实时爬取）
         comments_context = ""
         try:
             if self.comment_context_fetcher:
                 comments_context = await self.comment_context_fetcher.fetch_video_comments_context(
                     bvid=bvid,
-                    max_comments=30,  # 获取最近30条评论
+                    max_comments=30,
                     include_replies=True
                 )
                 if comments_context:
                     await self._print(f"      📋 已获取评论区上下文 ({len(comments_context)} 字符)")
         except Exception as e:
             self.logger.debug(f"获取评论区上下文失败: {e}")
-            comments_context = ""
         
-        # 使用防护层调用AI
+        should_continue = await self._should_continue_with_protection(
+            user_reply=content,
+            conversation_history=messages,
+            current_round=check_count,
+            max_rounds=CONVERSATION_CONFIG['max_check_count']
+        )
+        
+        if not should_continue.get('should_reply'):
+            reason = should_continue.get('reason', '未知原因')
+            await self._print(f"      🔚 AI判断无需继续对话: {reason}")
+            await self.db.update_conversation_status(
+                conv_id=conv_id,
+                status='closed',
+                close_reason='user_ended'
+            )
+            return
+        
         try:
-            result = await self._analyze_with_protection(
+            reply_text = await self._generate_follow_up_with_protection(
                 video_title=video_title,
                 video_summary=video_summary,
-                comment_username=username,
-                comment_content=content,
-                is_emergency=False,
+                conversation_history=messages,
+                user_last_message=content,
                 comments_context=comments_context
             )
             
-            if not result or not result.get('reply'):
-                await self._print(f"      AI判断无需回复")
+            if not reply_text:
+                await self._print(f"      AI未生成回复")
                 return
             
-            reply_text = result['reply']
-            
-            # 发送回复（限流保护）
             await self._send_reply_with_protection(
                 bvid=bvid, root_id=root_id, parent_id=parent_id,
                 content=reply_text, conv_id=conv_id,
@@ -392,6 +392,46 @@ class WarmBot:
         except Exception as e:
             self.logger.error(f"生成回复失败: {e}")
             self._stats['errors'].append(f"生成回复: {e}")
+    
+    async def _should_continue_with_protection(self, user_reply: str,
+                                                conversation_history: list,
+                                                current_round: int,
+                                                max_rounds: int) -> dict:
+        """在防护下判断是否继续对话"""
+        try:
+            await deepseek_limiter.acquire()
+            return await deepseek_breaker.call(
+                deepseek_retry.execute,
+                self.analyzer.should_continue_conversation,
+                user_reply=user_reply,
+                context_replies=[],
+                conversation_history=conversation_history,
+                current_round=current_round,
+                max_rounds=max_rounds
+            )
+        except Exception as e:
+            self.logger.error(f"判断是否继续对话失败: {e}")
+            return {"should_reply": True, "reason": f"判断异常: {e}", "reply": ""}
+    
+    async def _generate_follow_up_with_protection(self, video_title: str, video_summary: str,
+                                                   conversation_history: list,
+                                                   user_last_message: str,
+                                                   comments_context: str = "") -> Optional[str]:
+        """在防护下调用AI生成后续回复"""
+        try:
+            await deepseek_limiter.acquire()
+            return await deepseek_breaker.call(
+                deepseek_retry.execute,
+                self.analyzer.generate_follow_up_reply,
+                video_title=video_title,
+                video_summary=video_summary,
+                conversation_history=conversation_history,
+                user_last_message=user_last_message,
+                comments_context=comments_context
+            )
+        except Exception as e:
+            self.logger.error(f"AI生成后续回复失败: {e}")
+            return None
     
     async def _analyze_with_protection(self, **kwargs) -> Optional[Dict]:
         """
@@ -572,47 +612,42 @@ class WarmBot:
                     
                     # 只处理目标用户直接回复机器人的评论
                     if user_mid_str and user_mid_str == str(conv.get('user_mid')):
-                        parent_id = str(reply.get('parent', ''))
+                        parent_id_raw = reply.get('parent', 0)
                         # 提前获取用户名用于日志
                         reply_username = reply.get('member', {}).get('uname', '用户')
                         # 检查是否直接回复机器人的最后一条消息
-                        if last_bot_rpid and parent_id == last_bot_rpid:
+                        if last_bot_rpid and str(parent_id_raw) == last_bot_rpid:
                             new_user_replies.append({
                                 'reply': reply,
-                                'rpid_str': rpid_str
+                                'rpid_str': rpid_str,
+                                'parent_id': int(parent_id_raw) if parent_id_raw else root_id
                             })
                         else:
                             # 用户回复了其他人（包括自己），记录但不处理
-                            self.logger.debug(f"用户 {reply_username} 回复了非机器人消息(parent={parent_id})，忽略")
+                            self.logger.debug(f"用户 {reply_username} 回复了非机器人消息(parent={parent_id_raw})，忽略")
                     # 其他用户的回复直接忽略
             
-            # 4. 如果有新回复，继续对话
             if new_user_replies:
-                # 取最新的一条回复
                 latest_item = new_user_replies[-1]
                 latest_reply = latest_item['reply']
                 rpid_str = latest_item['rpid_str']
+                parent_id = latest_item['parent_id']
                 username = latest_reply.get('member', {}).get('uname', '用户')
                 content = latest_reply.get('content', {}).get('message', '')
                 
                 await self._print(f"   💬 对话 {conv['id']}: 收到 {len(new_user_replies)} 条新回复")
                 
-                # 记录新消息
                 await self.db.add_message(conv['id'], 'user', content, rpid=rpid_str)
                 
-                # 获取完整对话历史
                 messages = await self.db.get_conversation_messages(conv['id'])
-                formatted_messages = [{'role': msg.get('role', msg.get('speaker', 'unknown')), 'content': msg['content']} for msg in messages]
                 
-                # 继续对话
-                parent_id = latest_reply.get('parent', root_id)
                 await self._continue_conversation(
                     conv['id'], bvid, root_id, parent_id,
-                    username, content, formatted_messages
+                    username, content, messages,
+                    check_count=conv.get('check_count', 0)
                 )
                 return
             
-            # 5. 没有新回复，更新检查时间和次数（指数退避）
             check_count = conv.get('check_count', 0) + 1
             max_checks = CONVERSATION_CONFIG['max_check_count']
             
@@ -626,7 +661,6 @@ class WarmBot:
                 await self._print(f"   🔒 对话 {conv['id']}: 检查次数达上限({max_checks}次)，已关闭")
                 return
             
-            # 计算下次检查时间（指数退避）
             base_minutes = CONVERSATION_CONFIG['backoff_base_minutes']
             next_interval = base_minutes * (2 ** (check_count - 1))
             max_interval = CONVERSATION_CONFIG['max_check_interval_minutes']
@@ -792,26 +826,26 @@ class WarmBot:
                 await self._print(f"      🚫 AI判断无需安慰，已忽略")
                 return False
             
-            # 发送回复
-            await self._send_reply_with_protection(
-                bvid=bvid,
-                root_id=comment_id,
-                parent_id=comment_id,
-                content=result['reply'],
-                conv_id=None,  # 首次回复，创建新对话
-                username=username,
-                original_content=content
-            )
-            
-            # 创建对话记录
-            await self.db.create_conversation(
+            # 先创建对话记录，获取 conv_id
+            conv_id = await self.db.create_conversation(
                 bvid=bvid,
                 root_comment_id=comment_id,
                 user_mid=cmt['member']['mid'],
                 username=username,
                 first_message=content,
-                status='replied',
+                status='new',
                 next_check_at=datetime.now() + timedelta(hours=1)
+            )
+            
+            # 发送回复（使用有效的 conv_id）
+            await self._send_reply_with_protection(
+                bvid=bvid,
+                root_id=comment_id,
+                parent_id=comment_id,
+                content=result['reply'],
+                conv_id=conv_id,
+                username=username,
+                original_content=content
             )
             
             # 检查是否为紧急情况，如果是则记录

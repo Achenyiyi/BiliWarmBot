@@ -1,11 +1,11 @@
 """
-数据库管理模块 - 柯南优化版
+数据库管理模块
 
 核心表：
 1. tracked_videos - 追踪的视频
-2. conversations - 对话记录（支持精细化状态管理）
+2. conversations - 对话记录
 
-状态机：
+状态：
 - new: 新建，尚未回复
 - replied: 已回复，等待用户
 - ignored: 非目标对话，忽略
@@ -18,13 +18,13 @@ import aiosqlite
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional
 from contextlib import asynccontextmanager
 from config import DATABASE_PATH
 
 
 class DatabaseManager:
-    """柯南优化版数据库管理器 - 支持精细化状态管理"""
+    """数据库管理器"""
     
     def __init__(self, db_path: Path = DATABASE_PATH):
         self.db_path = db_path
@@ -49,7 +49,6 @@ class DatabaseManager:
                 )
             """)
             
-            # 对话记录表 - 支持精细化状态
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS conversations (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -62,18 +61,17 @@ class DatabaseManager:
                     last_reply_at TIMESTAMP,
                     next_check_at TIMESTAMP,
                     check_count INTEGER DEFAULT 0,
+                    close_reason TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
             
-            # 索引优化
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_conversations_bvid ON conversations(bvid)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_conversations_status ON conversations(status)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_conversations_next_check ON conversations(next_check_at)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_conversations_user ON conversations(user_mid)")
             
-            # 机器人发送的评论记录表 - 用于精确识别
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bot_comments (
                     comment_id INTEGER PRIMARY KEY,
@@ -84,6 +82,12 @@ class DatabaseManager:
                 )
             """)
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_bot_comments_bvid ON bot_comments(bvid)")
+            
+            # 数据库迁移：为已存在的表添加新字段
+            try:
+                cursor.execute("ALTER TABLE conversations ADD COLUMN close_reason TEXT")
+            except sqlite3.OperationalError:
+                pass  # 字段已存在，忽略
             
             conn.commit()
     
@@ -139,7 +143,7 @@ class DatabaseManager:
             )
             await conn.commit()
     
-    # ========== 对话相关（柯南优化版） ==========
+    # ========== 对话相关 ==========
     
     async def create_conversation(self, bvid: str, root_comment_id: int,
                                    user_mid: int, username: str,
@@ -179,7 +183,8 @@ class DatabaseManager:
             row = await cursor.fetchone()
             if row:
                 data = dict(row)
-                data['messages'] = json.loads(data['messages'])
+                messages_json = data['messages']
+                data['messages'] = json.loads(messages_json) if messages_json else []
                 return data
             return None
     
@@ -193,7 +198,8 @@ class DatabaseManager:
             row = await cursor.fetchone()
             if row:
                 data = dict(row)
-                data['messages'] = json.loads(data['messages'])
+                messages_json = data['messages']
+                data['messages'] = json.loads(messages_json) if messages_json else []
                 return data
             return None
     
@@ -208,7 +214,8 @@ class DatabaseManager:
             result = []
             for row in rows:
                 data = dict(row)
-                data['messages'] = json.loads(data['messages'])
+                messages_json = data['messages']
+                data['messages'] = json.loads(messages_json) if messages_json else []
                 result.append(data)
             return result
     
@@ -224,11 +231,12 @@ class DatabaseManager:
             result = []
             for row in rows:
                 data = dict(row)
-                data['messages'] = json.loads(data['messages'])
+                messages_json = data['messages']
+                data['messages'] = json.loads(messages_json) if messages_json else []
                 result.append(data)
             return result
     
-    async def add_message(self, conv_id: int, role: str, content: str, rpid: int = None):
+    async def add_message(self, conv_id: int, role: str, content: str, rpid = None):
         """添加消息到对话"""
         conv = await self.get_conversation(conv_id)
         if not conv:
@@ -240,8 +248,8 @@ class DatabaseManager:
             "content": content,
             "time": datetime.now().isoformat()
         }
-        if rpid:
-            message_data["rpid"] = rpid
+        if rpid is not None:
+            message_data["rpid"] = str(rpid)  # 统一转为字符串存储
         messages.append(message_data)
         
         async with self.get_connection() as conn:

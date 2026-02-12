@@ -12,14 +12,8 @@ SEARCH_CONFIG = {
     # 每次扫描的视频数量
     "max_videos_per_scan": 50,
     
-    # 每个情感场景最多搜索视频数
-    "max_videos_per_scene": 3,
-    
     # 搜索时间范围（天）
     "time_range_days": 1,
-    
-    # 每场景最多使用关键词数
-    "keyword_per_scene": 20,
 }
 
 
@@ -28,19 +22,8 @@ SEARCH_CONFIG = {
 # ============================================================================
 
 COMMENT_CONFIG = {
-    # 每小时最大评论数（防封禁）
-    "max_comments_per_hour": 30,
-    
     # 每个视频最大回复数
     "max_replies_per_video": 5,
-    
-    # 回复间隔（秒）
-    "reply_interval_min": 3,
-    "reply_interval_max": 8,
-    
-    # 回复长度限制（汉字）
-    "min_reply_length": 10,
-    "max_reply_length": 30,
 }
 
 
@@ -51,16 +34,6 @@ COMMENT_CONFIG = {
 PERFORMANCE_CONFIG = {
     # 扫描间隔（分钟）
     "scan_interval_minutes": 5,
-    
-    # API超时时间（秒）
-    "api_timeout": 30,
-    
-    # 并发请求数
-    "concurrent_videos": 1,
-    
-    # 视频间延迟（秒）
-    "video_delay_min": 1.5,
-    "video_delay_max": 3,
 }
 
 # ============================================================================
@@ -73,9 +46,6 @@ CONVERSATION_CONFIG = {
     
     # 最大检查次数 - 超过此次数则关闭对话
     "max_check_count": 8,
-    
-    # 首次检查间隔（分钟）
-    "first_check_interval_minutes": 30,
     
     # 指数退避基数（分钟）- 每次检查间隔 = base * (2 ^ check_count)
     "backoff_base_minutes": 30,
