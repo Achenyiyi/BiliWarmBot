@@ -313,12 +313,16 @@ class CommentInteractor:
     async def send_reply(self, oid: int, content: str, root: int = None,
                          parent: int = None, reply_to_uname: str = None,
                          reply_to_content: str = None) -> Optional[int]:
-        """发送评论回复"""
+        """发送评论回复（自动添加零宽空格标记）"""
         try:
+            # 添加零宽空格标记，用于区分AI回复和人工回复
+            ZWSP = "\u200B"
+            marked_content = content + ZWSP
+            
             if reply_to_uname:
-                full_content = f"回复 @{reply_to_uname} :\n{content}"
+                full_content = f"回复 @{reply_to_uname} :\n{marked_content}"
             else:
-                full_content = content
+                full_content = marked_content
             
             result = await comment.send_comment(
                 text=full_content,

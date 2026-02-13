@@ -39,8 +39,8 @@ class CommentContextFetcher:
             include_replies: 是否包含楼中楼回复
             
         Returns:
-            格式化后的评论区文本，例如：
-            """
+            格式化后的评论区文本
+        """
         try:
             # 获取视频信息
             v = video.Video(bvid=bvid, credential=self.credential)

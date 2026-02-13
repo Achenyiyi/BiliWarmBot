@@ -223,11 +223,11 @@ class DatabaseManager:
             return result
     
     async def get_replied_conversations_to_check(self) -> List[Dict]:
-        """获取需要检查的已回复对话（next_check_at到期）"""
+        """获取需要检查的已回复对话（包括replied和paused状态，next_check_at到期）"""
         async with self.get_connection() as conn:
             cursor = await conn.execute(
                 """SELECT * FROM conversations 
-                   WHERE status = 'replied' AND next_check_at <= ?""",
+                   WHERE status IN ('replied', 'paused') AND next_check_at <= ?""",
                 (datetime.now(),)
             )
             rows = await cursor.fetchall()

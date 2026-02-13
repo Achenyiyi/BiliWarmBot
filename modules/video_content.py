@@ -103,11 +103,11 @@ class VideoContentExtractor:
         try:
             v = video.Video(bvid=bvid, credential=self.credential)
             
+            # 获取视频信息（包含字幕信息）
+            info = await v.get_info()
             if cid is None:
-                info = await v.get_info()
                 cid = info.get("cid")
             
-            info = await v.get_info()
             subtitle_info = info.get("subtitle", {})
             
             if not subtitle_info or not subtitle_info.get("list"):
@@ -320,9 +320,11 @@ class VideoContentExtractor:
         # 策略 3: 标题+描述
         if not summary:
             desc = info.get('desc', '')
-            summary = f"【标题】{title}"
+            # 只保留简介，标题会在prompt中单独提供，避免重复
             if desc:
-                summary += f"\n【简介】{desc[:500]}"
+                summary = f"【简介】{desc[:500]}"
+            else:
+                summary = "（该视频暂无简介）"
             source = "meta"
             source_display = "标题和简介"
         else:

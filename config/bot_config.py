@@ -24,6 +24,9 @@ SEARCH_CONFIG = {
 COMMENT_CONFIG = {
     # 每个视频最大回复数
     "max_replies_per_video": 5,
+
+    # 数量越多，AI对评论区氛围了解越全面，但会增加API调用时间和token消耗
+    "comments_context_count": 30,
 }
 
 
@@ -52,4 +55,16 @@ CONVERSATION_CONFIG = {
     
     # 最大检查间隔（分钟）- 防止间隔过长
     "max_check_interval_minutes": 240,
+    
+    # 暂停状态配置（人工干预后的对话）
+    "paused_config": {
+        # 暂停状态检查间隔（分钟）
+        "check_interval_minutes": 360, 
+        
+        # 暂停状态最大检查次数 - 达到后关闭对话
+        "max_check_count": 3,
+        
+        # 暂停状态超时时间（小时）
+        "retention_hours": 24,
+    },
 }

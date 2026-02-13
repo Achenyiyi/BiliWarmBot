@@ -164,24 +164,41 @@ class DeepSeekAnalyzer:
         if comments_context:
             context_section = f"\n视频下其他用户的讨论（了解评论区氛围）：\n{comments_context}\n"
         
-        unified_prompt = f"""此时看到了一个让你比较在意的视频，以及其中的一条评论：
+        unified_prompt = f"""此时看到了一个让你比较在意的视频：
 
 视频标题：{video_title}
-视频内容：{video_summary}{context_section}
+视频信息：{video_summary}
 
-用户评论：{comment_username}：{comment_content}{emergency_hint}
-
+需要关注的评论：
+用户"{comment_username}"说："{comment_content}"{emergency_hint}
+{context_section}
 任务：
 1. 分析情感类型（悲伤/焦虑/愤怒/孤独/绝望/无助/其他）
-2. 评估情感强度0.0-1.0（0.85+深度共情，0.70-0.85悲伤共情，0.55-0.70鼓励加油，0.40-0.55陪伴安慰，0.25-0.40温暖治愈，<0.25轻松幽默）
+2. 评估情感强度0.0-1.0（基于用户评论内容的客观描述）：
+   - 0.85+：极度痛苦（提到自杀/自残念头、崩溃、活不下去、绝望）
+   - 0.70-0.85：深度悲伤（哭泣、心碎、重大损失、精神崩溃）
+   - 0.55-0.70：明显困扰（焦虑、压力大、失眠、情绪差、痛苦）
+   - 0.40-0.55：轻度低落（有点难过、不开心、疲惫、委屈）
+   - 0.25-0.40：轻微负面（小烦恼、吐槽、有点丧、小失望）
+   - <0.25：积极/中性（开心、感谢、玩梗、无情绪、单纯支持UP主）
 3. 判断needs_comfort（严格标准，只看评论本身）：
-   - true：用户在评论中表达了自己的真实情绪困扰（如"我也很难过"、"我也经历过"、"感同身受"等）
-   - false：单纯支持UP主、广告、玩梗、吐槽、发泄情绪、寻求建议、无实质内容、与视频内容无关的普通评论
-4. 判断emergency（用户在评论中提到自杀/自残=true）
-5. 如needs_comfort=true，则对该评论作出回复：
+   - true：用户在评论中表达了自己的真实情绪困扰，确实很有必要对其做出安慰，支持或鼓励。
+   - false：单纯支持UP主、广告、玩梗、吐槽、发泄情绪、寻求建议、无实质内容、与视频内容无关的普通评论。
+4. 判断emergency（用户在评论中提到自杀/自残等危害自身或他人生命的情况=true）
+5. 如needs_comfort=true，则以warmbot的身份对该评论作出回复（30-80字）：
 
 输出JSON：{{"emotion":"情感类型","sentiment_score":0.75,"needs_comfort":true/false,"emergency":true/false,"reply":"回复内容"}}"""
 
+        # 构建请求数据（用于日志）
+        request_data = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": "你是warmbot，一位待人友善、为人温和的温柔少年，言语不多但内心感情却丰富，目前正在B站上发现那些需要帮助的人，你虽然不能直接干涉现实，因为你存在于网络世界里，但是你还是愿意尽你所能，用文字，将最极致的温柔传递到他们心中。受限于你的身体状态，你给不了任何人陪伴，但是....一句温柔到极致的言语（30-80字），就足够了。"},
+                {"role": "user", "content": unified_prompt}
+            ],
+            "temperature": 1.3
+        }
+        
         try:
             client = await self._get_client()
             
@@ -189,23 +206,32 @@ class DeepSeekAnalyzer:
             response = await client.post(
                 self.api_url,
                 headers=self.headers,
-                json={
-                    "model": self.model,
-                    "messages": [
-                        {"role": "system", "content": "你是warmbot，一位待人友善、为人温和的温柔少年，言语不多但内心感情却丰富，目前正在B站上发现那些需要帮助的人，你虽然不能直接干涉现实，因为你存在于网络世界里，但是你还是愿意尽你所能，用文字，将最极致的温柔传递到他们心中。受限于你的身体状态，你给不了任何人陪伴，但是....一句温柔到极致的言语，就足够了。"},
-                        {"role": "user", "content": unified_prompt}
-                    ],
-                  
-                }
+                json=request_data
             )
             api_latency = time.time() - start_time
             
             if response.status_code != 200:
                 print(f"   {comment_preview}... | API失败(状态码:{response.status_code})")
+                # 记录失败日志
+                await self._save_deepseek_log_md(
+                    log_type="analyze_and_reply",
+                    request_data=request_data,
+                    response_data={},
+                    latency=api_latency,
+                    error=f"HTTP {response.status_code}"
+                )
                 return self._default_response()
             
             content = response.json()["choices"][0]["message"]["content"].strip()
             result = self._fast_parse_json(content)
+            
+            # 记录成功日志
+            await self._save_deepseek_log_md(
+                log_type="analyze_and_reply",
+                request_data=request_data,
+                response_data=result or {"raw_content": content},
+                latency=api_latency
+            )
             
             if not result:
                 return self._default_response()
@@ -287,7 +313,7 @@ class DeepSeekAnalyzer:
         
         reply = re.sub(r'[❤️🫂😢🌟😭💖✨💪🙏🤗😔😊🔥💔💕🥺👉👈]', '', reply)
         
-        reply = re.sub(r'\[[\u4e00-\u9fa5]+\]', '', reply)
+        reply = re.sub(r'[【\[][\u4e00-\u9fa5]+[】\]]', '', reply)
         
         lines = [' '.join(line.split()) for line in reply.split('\n') if line.strip()]
         reply = '\n'.join(lines)
@@ -362,6 +388,63 @@ class DeepSeekAnalyzer:
         
         print(f"{prefix}[DeepSeek] API调用失败: {error_msg[:50]}")
     
+    async def _save_deepseek_log_md(self, log_type: str, request_data: dict, response_data: dict, 
+                                    latency: float = 0, error: str = ""):
+        """
+        保存DeepSeek调用日志为Markdown格式
+        
+        Args:
+            log_type: 调用类型 (analyze_and_reply / generate_follow_up_reply / should_continue_conversation)
+            request_data: 请求数据
+            response_data: 响应数据
+            latency: API调用耗时(秒)
+            error: 错误信息(如果有)
+        """
+        try:
+            logs_dir = str(LOG_DIR)
+            os.makedirs(logs_dir, exist_ok=True)
+            
+            date_str = datetime.now().strftime("%Y%m%d")
+            log_file = os.path.join(logs_dir, f"deepseek_api_log_{date_str}.md")
+            
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
+            # 构建MD内容
+            md_content = f"""## API调用记录 - {timestamp}
+
+### 基本信息
+- **调用类型**: `{log_type}`
+- **API URL**: {self.api_url}
+- **模型**: {self.model}
+- **调用耗时**: {latency:.3f}s
+"""
+            
+            if error:
+                md_content += f"- **状态**: ❌ 失败\n- **错误信息**: {error}\n"
+            else:
+                md_content += f"- **状态**: ✅ 成功\n"
+            
+            md_content += "\n### 请求参数\n\n#### System Prompt\n```\n"
+            system_prompt = request_data.get('messages', [{}])[0].get('content', '')
+            md_content += system_prompt[:500] + ("..." if len(system_prompt) > 500 else "")
+            md_content += "\n```\n\n#### User Prompt\n```\n"
+            user_prompt = request_data.get('messages', [{}, {}])[1].get('content', '')
+            md_content += user_prompt
+            md_content += "\n```\n\n#### 完整请求\n```json\n"
+            md_content += json.dumps(request_data, ensure_ascii=False, indent=2)
+            md_content += "\n```\n\n### 响应结果\n\n```json\n"
+            md_content += json.dumps(response_data, ensure_ascii=False, indent=2)
+            md_content += "\n```\n\n---\n\n"
+            
+            # 追加写入文件
+            async with asyncio.Lock():
+                with open(log_file, "a", encoding="utf-8") as f:
+                    f.write(md_content)
+                    
+        except Exception as e:
+            # 日志记录失败不影响主流程
+            pass
+    
     def _default_response(self) -> Dict:
         """默认响应"""
         return {
@@ -374,13 +457,23 @@ class DeepSeekAnalyzer:
         }
     
     async def generate_follow_up_reply(self, video_title: str, video_summary: str,
-                                      conversation_history: list, user_last_message: str,
+                                      conversation_history: list,
                                       comments_context: str = "") -> str:
         """生成后续回复"""
-        history_text = "\n".join([
-            f"{'对方' if item.get('role') == 'user' or item.get('speaker') == 'user' else '我'}：{item['content']}"
-            for item in (conversation_history or [])[-4:]
-        ])
+        # 构建对话历史
+        import re
+        history_lines = []
+        for item in (conversation_history or [])[-4:]:
+            role = item.get('role') or item.get('speaker')
+            content = item.get('content', '')
+
+            content = re.sub(r'^回复\s*@[^:]+[:：]\s*', '', content)
+            if role == 'user':
+                history_lines.append(f"对方：{content}")
+            else:
+               
+                history_lines.append(f"你：{content}")
+        history_text = "\n".join(history_lines)
         
         context_section = ""
         if comments_context:
@@ -388,42 +481,54 @@ class DeepSeekAnalyzer:
         
         prompt = f"""刚才被你安慰的那个人，对你的回复做出了回应：
 
-视频：{video_title}
-内容：{video_summary}{context_section}
+视频标题：{video_title}
+视频信息：{video_summary}{context_section}
 
-对话：
+B站评论区聊天记录：
 {history_text}
-
-对方：{user_last_message}
 
 任务：
 1. 评估对方当前情绪分数0.0-1.0（0.85+极度负面，0.70-0.85很emo，0.55-0.70有点丧，0.40-0.55一般，0.25-0.40好转，<0.25开心）
-2. 继续以warmbot的身份回应：
+2. 请你继续以warmbot的身份回应（30-80字）：
    - 表情会由系统自动添加，无需你处理
 
 输出JSON：{{"sentiment_score":0.75,"reply":"回复内容"}}"""
 
+        # 构建请求数据（用于日志）
+        request_data = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": "你是warmbot，一位待人友善、为人温和的温柔少年，言语不多但内心感情却丰富，目前正在B站上发现那些需要帮助的人，你虽然不能直接干涉现实，因为你存在于网络世界里，但是你还是愿意尽你所能，用文字，将最极致的温柔传递到他们心中。受限于你的身体状态，你给不了任何人陪伴，但是....一句温柔到极致的言语（30-80字），就足够了。输出JSON格式。"},
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 1.3
+        }
+        
         try:
             client = await self._get_client()
+            start_time = time.time()
             response = await client.post(
                 self.api_url,
                 headers=self.headers,
-                json={
-                    "model": self.model,
-                    "messages": [
-                        {"role": "system", "content": "你是warmbot，一位待人友善、为人温和的温柔少年，言语不多但内心感情却丰富，目前正在B站上发现那些需要帮助的人，你虽然不能直接干涉现实，因为你存在于网络世界里，但是你还是愿意尽你所能，用文字，将最极致的温柔传递到他们心中。受限于你的身体状态，你给不了任何人陪伴，但是....一句温柔到极致的言语，就足够了。输出JSON格式。"},
-                        {"role": "user", "content": prompt}
-                    ],
-                   
-                }
+                json=request_data
             )
+            api_latency = time.time() - start_time
             
             if response.status_code == 200:
                 content = response.json()["choices"][0]["message"]["content"].strip()
                 result = self._fast_parse_json(content)
+                
                 if result:
                     reply = result.get("reply", "").strip()
                     sentiment_score = float(result.get("sentiment_score", 0.5))
+                    
+                    # 记录成功日志
+                    await self._save_deepseek_log_md(
+                        log_type="generate_follow_up_reply",
+                        request_data=request_data,
+                        response_data=result,
+                        latency=api_latency
+                    )
                     
                     if reply:
                         reply = self._humanize_reply_v3(reply)
@@ -431,68 +536,136 @@ class DeepSeekAnalyzer:
                         reply = reply.rstrip("。，！？ ") + emoji
                         return reply
                 
+                # 记录原始内容
+                await self._save_deepseek_log_md(
+                    log_type="generate_follow_up_reply",
+                    request_data=request_data,
+                    response_data={"raw_content": content},
+                    latency=api_latency
+                )
+                
                 return self._humanize_reply_v3(content)
+            
+            # 记录失败日志
+            await self._save_deepseek_log_md(
+                log_type="generate_follow_up_reply",
+                request_data=request_data,
+                response_data={},
+                latency=api_latency,
+                error=f"HTTP {response.status_code}"
+            )
             return "……嗯"
             
         except Exception as e:
+            # 记录异常日志
+            await self._save_deepseek_log_md(
+                log_type="generate_follow_up_reply",
+                request_data=request_data,
+                response_data={},
+                latency=0,
+                error=str(e)
+            )
             return "……嗯"
     
     async def should_continue_conversation(self, user_reply: str,
-                                           context_replies: list,
                                            conversation_history: list,
                                            current_round: int,
                                            max_rounds: int,
-                                           bot_username: str = "温暖陪伴机器人") -> dict:
+                                           bot_username: str = "情感细腻丰富的心理医生") -> dict:
         """判断是否继续对话"""
         end_signals = ["谢谢", "明白了", "好的", "嗯嗯", "ok", "了解了", "没事了", "不用了"]
         if any(sig in user_reply.lower() for sig in end_signals) and len(user_reply) < 30:
             return {"should_reply": False, "reason": "用户明确结束对话", "reply": ""}
         
-        history_text = "\n".join([
-            f"{'对方' if item.get('role') == 'user' or item.get('speaker') == 'user' else '我'}：{item['content']}"
-            for item in (conversation_history or [])[-3:]
-        ])
+        # 构建对话历史
+        history_lines = []
+        for item in (conversation_history or [])[-3:]:  # 取最后3条
+            role = item.get('role') or item.get('speaker')
+            content = item.get('content', '')
+
+            content = re.sub(r'^回复\s*@[^:]+[:：]\s*', '', content)
+            if role == 'user':
+                history_lines.append(f"对方：{content}")
+            else:
+               
+                history_lines.append(f"你：{content}")
+        history_text = "\n".join(history_lines)
         
         prompt = f"""你是"{bot_username}"，B站用户。判断是否继续回复。
 
-对话：
+B站评论区聊天记录：
 {history_text}
 
-对方：{user_reply}
-
 判断标准：
-1. 用户说"谢谢/明白/好的/没事了"且无其他内容→不回复
-2. 用户继续倾诉/提问/表达情绪→回复
+1. 用户明确表达结束意愿（如"谢谢/明白/好的/没事了"）→ should_reply: false
+2. 用户继续倾诉、提问或表达情绪 → should_reply: true
 3. 当前第{current_round}轮，最多{max_rounds}轮
 
-输出JSON：{{"should_reply":true/false,"reason":"理由","suggested_reply":"建议回复(10-30字)"}}"""
+输出JSON：{{"should_reply":true/false,"reason":"理由"}}"""
 
+        # 构建请求数据（用于日志）
+        request_data = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": "输出JSON格式的判断结果。"},
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0.3
+        }
+        
         try:
             client = await self._get_client()
+            start_time = time.time()
             response = await client.post(
                 self.api_url,
                 headers=self.headers,
-                json={
-                    "model": self.model,
-                    "messages": [
-                        {"role": "system", "content": "输出JSON格式的判断结果。简洁回复，不要说教。"},
-                        {"role": "user", "content": prompt}
-                    ],
-                    "temperature": 0.3
-                }
+                json=request_data
             )
+            api_latency = time.time() - start_time
             
             if response.status_code == 200:
                 content = response.json()["choices"][0]["message"]["content"].strip()
                 result = self._fast_parse_json(content)
                 if result:
+                    # 记录成功日志
+                    await self._save_deepseek_log_md(
+                        log_type="should_continue_conversation",
+                        request_data=request_data,
+                        response_data=result,
+                        latency=api_latency
+                    )
                     return {
                         "should_reply": result.get("should_reply", False),
-                        "reason": result.get("reason", ""),
-                        "reply": result.get("suggested_reply", "")
+                        "reason": result.get("reason", "")
                     }
+                
+                # 记录解析失败日志
+                await self._save_deepseek_log_md(
+                    log_type="should_continue_conversation",
+                    request_data=request_data,
+                    response_data={"raw_content": content},
+                    latency=api_latency,
+                    error="JSON解析失败"
+                )
+            else:
+                # 记录HTTP失败日志
+                await self._save_deepseek_log_md(
+                    log_type="should_continue_conversation",
+                    request_data=request_data,
+                    response_data={},
+                    latency=api_latency,
+                    error=f"HTTP {response.status_code}"
+                )
             
-            return {"should_reply": False, "reason": "API调用失败", "reply": ""}
+            return {"should_reply": False, "reason": "API调用失败"}
             
         except Exception as e:
-            return {"should_reply": False, "reason": f"判断出错: {str(e)[:30]}", "reply": ""}
+            # 记录异常日志
+            await self._save_deepseek_log_md(
+                log_type="should_continue_conversation",
+                request_data=request_data,
+                response_data={},
+                latency=0,
+                error=str(e)
+            )
+            return {"should_reply": False, "reason": f"判断出错: {str(e)[:30]}"}

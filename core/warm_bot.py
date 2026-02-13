@@ -112,8 +112,8 @@ class WarmBot:
             
             # 5. 初始化评论区上下文获取器
             self.comment_context_fetcher = CommentContextFetcher(self.credential)
-            
-            # 7. 健康检查
+
+            # 6. 健康检查
             if not await self._health_check():
                 self.logger.error("❌ 健康检查失败")
                 return False
@@ -330,22 +330,23 @@ class WarmBot:
         video_info = await self.db.get_tracked_video(bvid)
         video_title = video_info['title'] if video_info else "未知视频"
         
+        # 获取视频内容摘要（使用完整逻辑：AI总结 -> 字幕 -> 标题+简介）
         video_summary = ""
         try:
-            v = video.Video(bvid=bvid, credential=self.credential)
-            info = await v.get_info()
-            cid = info.get('cid', 0)
-            up_mid = info.get('owner', {}).get('mid', 0)
-            video_summary = await self.video_extractor.get_video_summary(bvid, cid, up_mid) or ""
-        except Exception:
-            pass
+            video_content = await self.video_extractor.extract_video_content(bvid)
+            if video_content and video_content.get('summary'):
+                video_summary = video_content['summary']
+                source_desc = video_content.get('source_desc', '未知来源')
+                await self._print(f"      📹 已获取视频内容 ({source_desc})")
+        except Exception as e:
+            self.logger.debug(f"获取视频内容失败: {e}")
         
         comments_context = ""
         try:
             if self.comment_context_fetcher:
                 comments_context = await self.comment_context_fetcher.fetch_video_comments_context(
                     bvid=bvid,
-                    max_comments=30,
+                    max_comments=COMMENT_CONFIG.get('comments_context_count', 50),
                     include_replies=True
                 )
                 if comments_context:
@@ -353,10 +354,13 @@ class WarmBot:
         except Exception as e:
             self.logger.debug(f"获取评论区上下文失败: {e}")
         
+        # 计算真实对话轮数（user消息的数量）
+        current_round = sum(1 for msg in messages if msg.get('role') == 'user')
+        
         should_continue = await self._should_continue_with_protection(
             user_reply=content,
             conversation_history=messages,
-            current_round=check_count,
+            current_round=current_round,
             max_rounds=CONVERSATION_CONFIG['max_check_count']
         )
         
@@ -375,7 +379,6 @@ class WarmBot:
                 video_title=video_title,
                 video_summary=video_summary,
                 conversation_history=messages,
-                user_last_message=content,
                 comments_context=comments_context
             )
             
@@ -404,7 +407,6 @@ class WarmBot:
                 deepseek_retry.execute,
                 self.analyzer.should_continue_conversation,
                 user_reply=user_reply,
-                context_replies=[],
                 conversation_history=conversation_history,
                 current_round=current_round,
                 max_rounds=max_rounds
@@ -415,7 +417,6 @@ class WarmBot:
     
     async def _generate_follow_up_with_protection(self, video_title: str, video_summary: str,
                                                    conversation_history: list,
-                                                   user_last_message: str,
                                                    comments_context: str = "") -> Optional[str]:
         """在防护下调用AI生成后续回复"""
         try:
@@ -426,7 +427,6 @@ class WarmBot:
                 video_title=video_title,
                 video_summary=video_summary,
                 conversation_history=conversation_history,
-                user_last_message=user_last_message,
                 comments_context=comments_context
             )
         except Exception as e:
@@ -606,10 +606,21 @@ class WarmBot:
                     
                     # 排除机器人自己的回复
                     if user_mid_str and self.bot_uid and user_mid_str == str(self.bot_uid):
-                        # 这是机器人自己的回复，记录rpid但不处理
-                        await self.db.add_message(conv['id'], 'bot', 
-                                                  (reply.get('content') or {}).get('message', ''), 
-                                                  rpid=rpid_str)
+                        reply_content = (reply.get('content') or {}).get('message', '')
+                        ZWSP = "\u200B"
+                        
+                        # 检查是否包含零宽空格标记
+                        if ZWSP in reply_content:
+                            # AI自动回复，记录并继续监控
+                            await self.db.add_message(conv['id'], 'bot', reply_content, rpid=rpid_str)
+                        else:
+                            # 人工回复（无零宽空格标记），暂停对话（不是关闭）
+                            await self.db.update_conversation_status(
+                                conv_id=conv['id'],
+                                status='paused',
+                                close_reason='manual_intervention'
+                            )
+                            await self._print(f"   👤 对话 {conv['id']}: 检测到人工干预，已暂停")
                         continue
                     
                     # 只处理目标用户直接回复机器人的评论
@@ -637,6 +648,15 @@ class WarmBot:
                 username = (latest_reply.get('member') or {}).get('uname', '用户')
                 content = (latest_reply.get('content') or {}).get('message', '')
                 
+                # 检查对话状态，如果是paused且用户有新回复，重新激活
+                current_status = conv.get('status', '')
+                if current_status == 'paused':
+                    await self._print(f"   🔄 对话 {conv['id']}: 暂停状态检测到新回复，重新激活")
+                    await self.db.update_conversation_status(
+                        conv_id=conv['id'],
+                        status='replied'
+                    )
+                
                 await self._print(f"   💬 对话 {conv['id']}: 收到 {len(new_user_replies)} 条新回复")
                 
                 await self.db.add_message(conv['id'], 'user', content, rpid=rpid_str)
@@ -653,32 +673,63 @@ class WarmBot:
                 return
             
             check_count = conv.get('check_count', 0) + 1
-            max_checks = CONVERSATION_CONFIG['max_check_count']
+            current_status = conv.get('status', 'replied')
             
-            if check_count >= max_checks:
+            # 根据状态使用不同的配置
+            if current_status == 'paused':
+                # 暂停状态使用独立配置
+                paused_config = CONVERSATION_CONFIG['paused_config']
+                max_checks = paused_config['max_check_count']
+                
+                if check_count >= max_checks:
+                    await self.db.update_conversation_status(
+                        conv_id=conv['id'],
+                        status='closed',
+                        check_count=check_count,
+                        close_reason='paused_max_checks'
+                    )
+                    await self._print(f"   🔒 对话 {conv['id']}: 暂停状态检查次数达上限({max_checks}次)，已关闭")
+                    return
+                
+                # 暂停状态使用固定间隔（6小时）
+                next_interval = paused_config['check_interval_minutes']
+                next_check_at = datetime.now() + timedelta(minutes=next_interval)
+                
                 await self.db.update_conversation_status(
                     conv_id=conv['id'],
-                    status='closed',
-                    check_count=check_count,
-                    close_reason='max_checks_reached'
+                    status='paused',  # 保持paused状态
+                    next_check_at=next_check_at,
+                    check_count=check_count
                 )
-                await self._print(f"   🔒 对话 {conv['id']}: 检查次数达上限({max_checks}次)，已关闭")
-                return
-            
-            base_minutes = CONVERSATION_CONFIG['backoff_base_minutes']
-            next_interval = base_minutes * (2 ** (check_count - 1))
-            max_interval = CONVERSATION_CONFIG['max_check_interval_minutes']
-            next_interval = min(next_interval, max_interval)
-            
-            next_check_at = datetime.now() + timedelta(minutes=next_interval)
-            
-            await self.db.update_conversation_status(
-                conv_id=conv['id'],
-                status='replied',
-                next_check_at=next_check_at,
-                check_count=check_count
-            )
-            await self._print(f"   ⏳ 对话 {conv['id']}: 无新回复，{next_interval}分钟后再次检查(第{check_count}次)")
+                await self._print(f"   ⏳ 对话 {conv['id']}: 暂停状态无新回复，{next_interval}分钟后再次检查(第{check_count}次)")
+            else:
+                # replied状态使用原有逻辑
+                max_checks = CONVERSATION_CONFIG['max_check_count']
+                
+                if check_count >= max_checks:
+                    await self.db.update_conversation_status(
+                        conv_id=conv['id'],
+                        status='closed',
+                        check_count=check_count,
+                        close_reason='max_checks_reached'
+                    )
+                    await self._print(f"   🔒 对话 {conv['id']}: 检查次数达上限({max_checks}次)，已关闭")
+                    return
+                
+                base_minutes = CONVERSATION_CONFIG['backoff_base_minutes']
+                next_interval = base_minutes * (2 ** (check_count - 1))
+                max_interval = CONVERSATION_CONFIG['max_check_interval_minutes']
+                next_interval = min(next_interval, max_interval)
+                
+                next_check_at = datetime.now() + timedelta(minutes=next_interval)
+                
+                await self.db.update_conversation_status(
+                    conv_id=conv['id'],
+                    status='replied',
+                    next_check_at=next_check_at,
+                    check_count=check_count
+                )
+                await self._print(f"   ⏳ 对话 {conv['id']}: 无新回复，{next_interval}分钟后再次检查(第{check_count}次)")
             
         except Exception as e:
             error_msg = str(e)
@@ -687,6 +738,15 @@ class WarmBot:
                 self.logger.warning(f"对话 {conv['id']} 的根评论已被删除，关闭对话")
                 await self.db.close_conversation(conv['id'])
                 await self._print(f"   🗑️ 对话 {conv['id']}: 原评论已被删除，已关闭")
+            # 检查是否是评论功能已关闭的错误 (12002)
+            elif '12002' in error_msg or '评论功能已关闭' in error_msg:
+                self.logger.warning(f"对话 {conv['id']} 的视频评论功能已关闭，关闭对话")
+                await self.db.update_conversation_status(
+                    conv_id=conv['id'],
+                    status='closed',
+                    close_reason='comments_disabled'
+                )
+                await self._print(f"   🔒 对话 {conv['id']}: 视频评论功能已关闭，关闭对话")
             else:
                 import traceback
                 self.logger.error(f"检查对话 {conv['id']} 失败: {e}")
@@ -796,13 +856,22 @@ class WarmBot:
             if existing_conv:
                 return False
             
+            # 获取视频内容摘要（使用完整逻辑）
+            video_summary = ""
+            try:
+                video_content = await self.video_extractor.extract_video_content(bvid)
+                if video_content and video_content.get('summary'):
+                    video_summary = video_content['summary']
+            except Exception as e:
+                self.logger.debug(f"获取视频内容失败: {e}")
+            
             # 获取评论区上下文（实时爬取）
             comments_context = ""
             try:
                 if self.comment_context_fetcher:
                     comments_context = await self.comment_context_fetcher.fetch_video_comments_context(
                         bvid=bvid,
-                        max_comments=30,
+                        max_comments=COMMENT_CONFIG.get('comments_context_count', 30),
                         include_replies=True
                     )
             except Exception as e:
@@ -812,7 +881,7 @@ class WarmBot:
             # AI分析
             result = await self._analyze_with_protection(
                 video_title=title,
-                video_summary="",
+                video_summary=video_summary,
                 comment_username=username,
                 comment_content=content,
                 is_emergency=False,
