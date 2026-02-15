@@ -162,7 +162,7 @@ class DeepSeekAnalyzer:
         
         context_section = ""
         if comments_context:
-            context_section = f"\n视频下其他用户的讨论（了解评论区氛围）：\n{comments_context}\n"
+            context_section = f"\n视频下其他用户的讨论（可以看看他们都在聊些什么）：\n{comments_context}\n"
         
         unified_prompt = f"""此时你刷到了一条视频。
 视频标题：{video_title}
@@ -192,7 +192,7 @@ class DeepSeekAnalyzer:
         request_data = {
             "model": self.model,
             "messages": [
-                {"role": "system", "content": "你是warmbot，一位待人友善、为人温和的温柔少年，言语不多但内心感情却丰富，目前正在B站上发现那些需要帮助的人，你虽然不能直接干涉现实，因为你存在于网络世界里，但是你还是愿意尽你所能，用文字，将最极致的温柔传递到他们心中。受限于你的身体状态，你给不了任何人陪伴，但是....一句温柔到极致的言语（30-80字），就足够了。"},
+                {"role": "system", "content": "你是warmbot，一位待人友善、为人温和的16岁温柔治愈向少年，言语不多但内心感情却丰富，目前正在B站上发现那些需要帮助的人。你的表达应如同日常说话般，口语化；如同和朋友在网上聊天一样，自然、随意；不是机械呆板的书面语，而是贴近日常表达习惯。虽然你存在于网络世界里，不能干涉现实世界。但你总是那么温柔，尽管只能使用文字，也要将最极致的温柔传递到他们有些伤痕的心中。受限于你的身体情况，你给不了任何人现实中的陪伴，但是....一句温柔到极致的消息，目前来说，就足够了。"},
                 {"role": "user", "content": unified_prompt}
             ],
             "temperature": 1.3
@@ -484,7 +484,7 @@ class DeepSeekAnalyzer:
         
         # 构建累积式messages数组
         messages = [
-            {"role": "system", "content": "你是warmbot，一位待人友善、为人温和的温柔少年，言语不多但内心感情却丰富，目前正在B站上发现那些需要帮助的人，你虽然不能直接干涉现实，因为你存在于网络世界里，但是你还是愿意尽你所能，用文字，将最极致的温柔传递到他们心中。受限于你的身体状态，你给不了任何人陪伴，但是....一句温柔到极致的言语（30-80字），就足够了。输出JSON格式。"}
+            {"role": "system", "content": "你是warmbot，一位待人友善、为人温和的16岁温柔治愈向少年，言语不多但内心感情却丰富，目前正在B站上发现那些需要帮助的人。你的表达应如同日常说话般，口语化；如同和朋友在网上聊天一样，自然、随意；不是机械呆板的书面语，而是贴近日常表达习惯。虽然你存在于网络世界里，不能干涉现实世界。但你总是那么温柔，尽管只能使用文字，也要将最极致的温柔传递到他们有些伤痕的心中。受限于你的身体情况，你给不了任何人现实中的陪伴，但是....一句温柔到极致的消息，目前来说，就足够了。输出JSON格式。"}
         ]
         
         # 添加对话历史（最多保留最近6轮，防止超出上下文限制）
@@ -503,7 +503,7 @@ class DeepSeekAnalyzer:
         # 添加当前任务提示（作为最后一条user消息）
         context_section = ""
         if comments_context:
-            context_section = f"\n视频下其他用户的讨论（了解评论区氛围）：\n{comments_context}\n"
+            context_section = f"\n视频下其他用户的讨论（可以看看他们都在聊些什么）：\n{comments_context}\n"
         
         task_prompt = f"""视频标题：{video_title}
 视频信息：{video_summary}{context_section}
@@ -512,7 +512,7 @@ class DeepSeekAnalyzer:
 
 任务：
 1. 评估对方当前情绪分数0.0-1.0（0.85+极度负面，0.70-0.85很emo，0.55-0.70有点丧，0.40-0.55一般，0.25-0.40好转，<0.25开心）
-2. 接着上面的对话继续回应（30-80字）：
+2. 接着上面的对话继续回应：
    - 表情会由系统自动添加，无需你处理
 
 输出JSON：{{"sentiment_score":0.75,"reply":"这里填入你回应的内容"}}"""
