@@ -36,7 +36,7 @@ COMMENT_CONFIG = {
 
 PERFORMANCE_CONFIG = {
     # 扫描间隔（分钟）
-    "scan_interval_minutes": 5,
+    "scan_interval_minutes": 10,
 }
 
 # ============================================================================
@@ -58,13 +58,10 @@ CONVERSATION_CONFIG = {
     
     # 暂停状态配置（人工干预后的对话）
     "paused_config": {
-        # 暂停状态检查间隔（分钟）
-        "check_interval_minutes": 360, 
-        
-        # 暂停状态最大检查次数 - 达到后关闭对话
-        "max_check_count": 3,
-        
-        # 暂停状态超时时间（小时）
-        "retention_hours": 24,
+        # 暂停状态检查间隔（分钟）- 给用户和人工对话的时间窗口
+        "check_interval_minutes": 120,
+
+        # 暂停状态最大检查次数 - 达到后关闭对话（120分钟×12次=24小时）
+        "max_check_count": 12,
     },
 }
