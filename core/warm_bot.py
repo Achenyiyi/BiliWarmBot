@@ -595,6 +595,9 @@ class WarmBot:
             bot_messages = [msg for msg in existing_messages if msg.get('role') == 'bot' and msg.get('rpid')]
             last_bot_rpid = str(bot_messages[-1].get('rpid')) if bot_messages else None
             
+            # 零宽空格标记，用于区分AI回复和人工回复
+            ZWSP = "\u200B"
+            
             # 找出用户的新回复（只处理直接回复机器人的）
             new_user_replies = []
             for reply in sub_replies:
@@ -607,20 +610,36 @@ class WarmBot:
                     # 排除机器人自己的回复
                     if user_mid_str and self.bot_uid and user_mid_str == str(self.bot_uid):
                         reply_content = (reply.get('content') or {}).get('message', '')
-                        ZWSP = "\u200B"
                         
                         # 检查是否包含零宽空格标记
                         if ZWSP in reply_content:
                             # AI自动回复，记录并继续监控
                             await self.db.add_message(conv['id'], 'bot', reply_content, rpid=rpid_str)
                         else:
-                            # 人工回复（无零宽空格标记），暂停对话（不是关闭）
-                            await self.db.update_conversation_status(
-                                conv_id=conv['id'],
-                                status='paused',
-                                close_reason='manual_intervention'
+                            # 人工回复（无零宽空格标记）
+                            # 检查对话历史中是否有过AI回复
+                            has_ai_reply = any(
+                                ZWSP in (msg.get('content', '') or '') 
+                                for msg in existing_messages 
+                                if msg.get('role') == 'bot'
                             )
-                            await self._print(f"   👤 对话 {conv['id']}: 检测到人工干预，已暂停")
+                            
+                            if has_ai_reply:
+                                # AI参与过的对话，人工干预后暂停
+                                await self.db.update_conversation_status(
+                                    conv_id=conv['id'],
+                                    status='paused',
+                                    close_reason='manual_intervention'
+                                )
+                                await self._print(f"   👤 对话 {conv['id']}: 检测到人工干预，已暂停")
+                            else:
+                                # 用户自己主动发起的对话，AI直接忽略（关闭）
+                                await self.db.update_conversation_status(
+                                    conv_id=conv['id'],
+                                    status='closed',
+                                    close_reason='manual_initiated'
+                                )
+                                await self._print(f"   👤 对话 {conv['id']}: 检测到人工主动回复，AI忽略")
                         continue
                     
                     # 只处理目标用户直接回复机器人的评论
@@ -648,14 +667,46 @@ class WarmBot:
                 username = (latest_reply.get('member') or {}).get('uname', '用户')
                 content = (latest_reply.get('content') or {}).get('message', '')
                 
-                # 检查对话状态，如果是paused且用户有新回复，重新激活
+                # 检查对话状态，如果是paused且用户有新回复，判断回复对象
                 current_status = conv.get('status', '')
                 if current_status == 'paused':
-                    await self._print(f"   🔄 对话 {conv['id']}: 暂停状态检测到新回复，重新激活")
-                    await self.db.update_conversation_status(
-                        conv_id=conv['id'],
-                        status='replied'
-                    )
+                    # 获取用户回复的parent_id，找到被回复的消息
+                    user_reply_parent_id = str(parent_id)
+                    replied_to_bot = False
+                    
+                    # 在子评论中查找被回复的消息
+                    for reply in sub_replies:
+                        if str(reply.get('rpid')) == user_reply_parent_id:
+                            parent_content = (reply.get('content') or {}).get('message', '')
+                            # 检查被回复的消息是否包含零宽空格（AI发的）
+                            if ZWSP in parent_content:
+                                replied_to_bot = True
+                            break
+                    
+                    if replied_to_bot:
+                        # 用户回复的是AI消息，重新激活
+                        await self._print(f"   🔄 对话 {conv['id']}: 暂停状态检测到用户回复AI，重新激活")
+                        await self.db.update_conversation_status(
+                            conv_id=conv['id'],
+                            status='replied'
+                        )
+                    else:
+                        # 用户回复的是人工消息，保持暂停
+                        await self._print(f"   ⏸️ 对话 {conv['id']}: 用户回复人工消息，保持暂停")
+                        # 记录用户回复但不激活AI
+                        await self.db.add_message(conv['id'], 'user', content, rpid=rpid_str)
+                        # 更新检查次数和下次检查时间
+                        check_count = conv.get('check_count', 0) + 1
+                        paused_config = CONVERSATION_CONFIG['paused_config']
+                        next_interval = paused_config['check_interval_minutes']
+                        next_check_at = datetime.now() + timedelta(minutes=next_interval)
+                        await self.db.update_conversation_status(
+                            conv_id=conv['id'],
+                            status='paused',
+                            next_check_at=next_check_at,
+                            check_count=check_count
+                        )
+                        return
                 
                 await self._print(f"   💬 对话 {conv['id']}: 收到 {len(new_user_replies)} 条新回复")
                 
