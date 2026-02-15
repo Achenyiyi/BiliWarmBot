@@ -221,14 +221,22 @@ class DeepSeekAnalyzer:
                 )
                 return self._default_response()
             
-            content = response.json()["choices"][0]["message"]["content"].strip()
+            response_json = response.json()
+            message = response_json["choices"][0]["message"]
+            content = message["content"].strip()
+            reasoning_content = message.get("reasoning_content", "")  # 推理模型支持
+            
             result = self._fast_parse_json(content)
             
-            # 记录成功日志
+            # 记录成功日志（包含思维链）
+            log_response_data = result or {"raw_content": content}
+            if reasoning_content:
+                log_response_data["reasoning_content"] = reasoning_content
+            
             await self._save_deepseek_log_md(
                 log_type="analyze_and_reply",
                 request_data=request_data,
-                response_data=result or {"raw_content": content},
+                response_data=log_response_data,
                 latency=api_latency
             )
             
@@ -431,8 +439,21 @@ class DeepSeekAnalyzer:
             md_content += user_prompt
             md_content += "\n```\n\n#### 完整请求\n```json\n"
             md_content += json.dumps(request_data, ensure_ascii=False, indent=2)
-            md_content += "\n```\n\n### 响应结果\n\n```json\n"
-            md_content += json.dumps(response_data, ensure_ascii=False, indent=2)
+            md_content += "\n### 响应结果\n\n"
+            
+            # 如果有思维链（推理模型），单独展示
+            reasoning_content = response_data.get("reasoning_content", "")
+            if reasoning_content:
+                md_content += "#### 思维链 (Reasoning)\n```\n"
+                md_content += reasoning_content
+                md_content += "\n```\n\n"
+                # 从response_data中移除，避免在JSON中重复显示
+                response_data_for_json = {k: v for k, v in response_data.items() if k != "reasoning_content"}
+            else:
+                response_data_for_json = response_data
+            
+            md_content += "#### 最终结果\n```json\n"
+            md_content += json.dumps(response_data_for_json, ensure_ascii=False, indent=2)
             md_content += "\n```\n\n---\n\n"
             
             # 追加写入文件
@@ -514,18 +535,26 @@ B站评论区聊天记录：
             api_latency = time.time() - start_time
             
             if response.status_code == 200:
-                content = response.json()["choices"][0]["message"]["content"].strip()
+                response_json = response.json()
+                message = response_json["choices"][0]["message"]
+                content = message["content"].strip()
+                reasoning_content = message.get("reasoning_content", "")  # 推理模型支持
+                
                 result = self._fast_parse_json(content)
                 
                 if result:
                     reply = result.get("reply", "").strip()
                     sentiment_score = float(result.get("sentiment_score", 0.5))
                     
-                    # 记录成功日志
+                    # 记录成功日志（包含思维链）
+                    log_response_data = result.copy()
+                    if reasoning_content:
+                        log_response_data["reasoning_content"] = reasoning_content
+                    
                     await self._save_deepseek_log_md(
                         log_type="generate_follow_up_reply",
                         request_data=request_data,
-                        response_data=result,
+                        response_data=log_response_data,
                         latency=api_latency
                     )
                     
@@ -623,14 +652,22 @@ B站评论区聊天记录：
             api_latency = time.time() - start_time
             
             if response.status_code == 200:
-                content = response.json()["choices"][0]["message"]["content"].strip()
+                response_json = response.json()
+                message = response_json["choices"][0]["message"]
+                content = message["content"].strip()
+                reasoning_content = message.get("reasoning_content", "")  # 推理模型支持
+                
                 result = self._fast_parse_json(content)
                 if result:
-                    # 记录成功日志
+                    # 记录成功日志（包含思维链）
+                    log_response_data = result.copy()
+                    if reasoning_content:
+                        log_response_data["reasoning_content"] = reasoning_content
+                    
                     await self._save_deepseek_log_md(
                         log_type="should_continue_conversation",
                         request_data=request_data,
-                        response_data=result,
+                        response_data=log_response_data,
                         latency=api_latency
                     )
                     return {
