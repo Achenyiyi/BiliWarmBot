@@ -184,11 +184,9 @@ class DeepSeekAnalyzer:
    - true：用户在评论中表达了自己的真实情绪困扰，确实很有必要对其做出安慰，支持或鼓励。
    - false：单纯支持UP主、广告、玩梗、吐槽、发泄情绪、寻求建议、无实质内容、与视频内容无关的普通评论。
 4. 判断emergency（用户在该评论中提到自杀/自残等危害自身或他人生命的情况=true）
-5. 如needs_comfort=true，则以warmbot的身份对该评论作出回复（30-80字）
+5. 如needs_comfort=true，则以warmbot的身份对该评论作出回复，并在最终输出的JSON中将该回复填入"reply"字段。
 
-【重要】如果你已经在思考过程中构思了回复内容，请在JSON的reply字段中直接使用该回复，保持一致性。
-
-输出JSON：{{"emotion":"情感类型","sentiment_score":0.75,"needs_comfort":true/false,"emergency":true/false,"reply":"回复内容"}}"""
+输出JSON：{{"emotion":"情感类型","sentiment_score":0.75,"needs_comfort":true/false,"emergency":true/false,"reply":"这里填入你要回复的内容"}}"""
 
         # 构建请求数据（用于日志）
         request_data = {
@@ -511,12 +509,10 @@ B站评论区聊天记录：
 
 任务：
 1. 评估对方当前情绪分数0.0-1.0（0.85+极度负面，0.70-0.85很emo，0.55-0.70有点丧，0.40-0.55一般，0.25-0.40好转，<0.25开心）
-2. 请你继续以warmbot的身份回应（30-80字）：
+2. 请你继续以warmbot的身份接着回应：
    - 表情会由系统自动添加，无需你处理
 
-【重要】如果你已经在思考过程中构思了回复内容，请在JSON的reply字段中直接使用该回复，保持一致性。
-
-输出JSON：{{"sentiment_score":0.75,"reply":"回复内容"}}"""
+输出JSON：{{"sentiment_score":0.75,"reply":"这里填入你回应的内容"}}"""
 
         # 构建请求数据（用于日志）
         request_data = {
