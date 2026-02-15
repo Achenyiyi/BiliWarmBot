@@ -479,48 +479,50 @@ class DeepSeekAnalyzer:
     async def generate_follow_up_reply(self, video_title: str, video_summary: str,
                                       conversation_history: list,
                                       comments_context: str = "") -> str:
-        """生成后续回复"""
-        # 构建对话历史
+        """生成后续回复（使用累积messages格式保持对话连贯性）"""
         import re
-        history_lines = []
-        for item in (conversation_history or [])[-4:]:
+        
+        # 构建累积式messages数组
+        messages = [
+            {"role": "system", "content": "你是warmbot，一位待人友善、为人温和的温柔少年，言语不多但内心感情却丰富，目前正在B站上发现那些需要帮助的人，你虽然不能直接干涉现实，因为你存在于网络世界里，但是你还是愿意尽你所能，用文字，将最极致的温柔传递到他们心中。受限于你的身体状态，你给不了任何人陪伴，但是....一句温柔到极致的言语（30-80字），就足够了。输出JSON格式。"}
+        ]
+        
+        # 添加对话历史（最多保留最近6轮，防止超出上下文限制）
+        for item in (conversation_history or [])[-6:]:
             role = item.get('role') or item.get('speaker')
             content = item.get('content', '')
-
+            
+            # 清理回复中的@用户名前缀
             content = re.sub(r'^回复\s*@[^:]+[:：]\s*', '', content)
+            
             if role == 'user':
-                history_lines.append(f"对方：{content}")
+                messages.append({"role": "user", "content": content})
             else:
-               
-                history_lines.append(f"你：{content}")
-        history_text = "\n".join(history_lines)
+                messages.append({"role": "assistant", "content": content})
         
+        # 添加当前任务提示（作为最后一条user消息）
         context_section = ""
         if comments_context:
             context_section = f"\n视频下其他用户的讨论（了解评论区氛围）：\n{comments_context}\n"
         
-        prompt = f"""刚才被你安慰的那个人，对你的回复做出了回应：
-
-视频标题：{video_title}
+        task_prompt = f"""视频标题：{video_title}
 视频信息：{video_summary}{context_section}
 
-B站评论区聊天记录：
-{history_text}
+对方刚刚回复了你，请继续以warmbot的身份回应。
 
 任务：
 1. 评估对方当前情绪分数0.0-1.0（0.85+极度负面，0.70-0.85很emo，0.55-0.70有点丧，0.40-0.55一般，0.25-0.40好转，<0.25开心）
-2. 请你继续以warmbot的身份接着回应：
+2. 接着上面的对话继续回应（30-80字）：
    - 表情会由系统自动添加，无需你处理
 
 输出JSON：{{"sentiment_score":0.75,"reply":"这里填入你回应的内容"}}"""
-
-        # 构建请求数据（用于日志）
+        
+        messages.append({"role": "user", "content": task_prompt})
+        
+        # 构建请求数据
         request_data = {
             "model": self.model,
-            "messages": [
-                {"role": "system", "content": "你是warmbot，一位待人友善、为人温和的温柔少年，言语不多但内心感情却丰富，目前正在B站上发现那些需要帮助的人，你虽然不能直接干涉现实，因为你存在于网络世界里，但是你还是愿意尽你所能，用文字，将最极致的温柔传递到他们心中。受限于你的身体状态，你给不了任何人陪伴，但是....一句温柔到极致的言语（30-80字），就足够了。输出JSON格式。"},
-                {"role": "user", "content": prompt}
-            ],
+            "messages": messages,
             "temperature": 1.3
         }
         
