@@ -19,7 +19,7 @@ import time
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
-from config import DEEPSEEK_API_KEY, DEEPSEEK_API_URL, DEEPSEEK_MODEL, LOG_DIR
+from config import DEEPSEEK_API_KEY, DEEPSEEK_API_URL, DEEPSEEK_MODEL, LOG_DIR, DEEPSEEK_TEMPERATURE, DEEPSEEK_MAX_TOKENS
 from config.emoji_scenarios import get_emoji_for_emotion, get_emoji_for_sentiment
 
 
@@ -62,6 +62,10 @@ class DeepSeekAnalyzer:
             "Content-Type": "application/json"
         }
         self._client_ref_count += 1
+    
+    def _is_reasoning_model(self) -> bool:
+        """判断当前是否为推理模型（reasoner）"""
+        return "reasoner" in self.model.lower()
     
     async def _get_client(self) -> httpx.AsyncClient:
         """获取或创建 HTTP 客户端"""
@@ -162,7 +166,7 @@ class DeepSeekAnalyzer:
         
         context_section = ""
         if comments_context:
-            context_section = f"\n视频下其他用户的讨论（可以看看他们都在聊些什么）：\n{comments_context}\n"
+            context_section = f"\n顺便看看评论区，了解下他们在说什么：\n{comments_context}\n"
         
         unified_prompt = f"""此时你刷到了一条视频。
 视频标题：{video_title}
@@ -184,19 +188,23 @@ class DeepSeekAnalyzer:
    - true：用户在评论中表达了自己的真实情绪困扰，确实很有必要对其做出安慰，支持或鼓励。
    - false：单纯支持UP主、广告、玩梗、吐槽、发泄情绪、寻求建议、无实质内容、与视频内容无关的普通评论。
 4. 判断emergency（用户在该评论中提到自杀/自残等危害自身或他人生命的情况=true）
-5. 如needs_comfort=true，则以warmbot的身份对该评论作出回复，并在最终输出的JSON中将该回复填入"reply"字段。
+5. 如needs_comfort=true，则以的身份对该评论作出回复，并在最终输出的JSON中将该回复填入"reply"字段。
 
-输出JSON：{{"emotion":"情感类型","sentiment_score":0.75,"needs_comfort":true/false,"emergency":true/false,"reply":"这里填入你要回复的内容"}}"""
+输出JSON：{{"emotion":"情感类型","sentiment_score":0.75,"needs_comfort":true/false,"emergency":true/false,"reply":""}}"""
 
         # 构建请求数据（用于日志）
         request_data = {
             "model": self.model,
             "messages": [
-                {"role": "system", "content": "你是warmbot，一位待人友善、为人温和的16岁温柔治愈向少年，言语不多但内心感情却丰富，目前正在B站上发现那些需要帮助的人。你的表达应如同日常说话般，口语化；如同和朋友在网上聊天一样，自然、随意；不是机械呆板的书面语，而是贴近日常表达习惯。虽然你存在于网络世界里，不能干涉现实世界。但你总是那么温柔，尽管只能使用文字，也要将最极致的温柔传递到他们有些伤痕的心中。受限于你的身体情况，你给不了任何人现实中的陪伴，但是....一句温柔到极致的消息，目前来说，就足够了。"},
+                {"role": "system", "content": "你是一位待人友善、为人温和的16岁治愈向少年，言语轻柔简洁，内心细腻，目前正在B站刷视频。你的表达应如同日常说话般：口语化；如同和朋友在微信，抖音上聊天一样：自然、随意；不是机械呆板的书面语，而是贴近日常表达习惯。虽然你存在于网络世界里，不能干涉现实世界。但你总是那么温柔，尽管只能使用文字，也要将最极致的温柔传递到他们有些伤痕的心中。受限于你的身体情况，你给不了任何人现实中的陪伴，但是...一句温柔到极致的消息，目前来说，就足够了。"},
                 {"role": "user", "content": unified_prompt}
             ],
-            "temperature": 1.3
+            "temperature": DEEPSEEK_TEMPERATURE
         }
+        
+        # 只有非推理模型且配置了 max_tokens 时才设置
+        if not self._is_reasoning_model() and DEEPSEEK_MAX_TOKENS is not None:
+            request_data["max_tokens"] = DEEPSEEK_MAX_TOKENS
         
         try:
             client = await self._get_client()
@@ -484,7 +492,7 @@ class DeepSeekAnalyzer:
         
         # 构建累积式messages数组
         messages = [
-            {"role": "system", "content": "你是warmbot，一位待人友善、为人温和的16岁温柔治愈向少年，言语不多但内心感情却丰富，目前正在B站上发现那些需要帮助的人。你的表达应如同日常说话般，口语化；如同和朋友在网上聊天一样，自然、随意；不是机械呆板的书面语，而是贴近日常表达习惯。虽然你存在于网络世界里，不能干涉现实世界。但你总是那么温柔，尽管只能使用文字，也要将最极致的温柔传递到他们有些伤痕的心中。受限于你的身体情况，你给不了任何人现实中的陪伴，但是....一句温柔到极致的消息，目前来说，就足够了。输出JSON格式。"}
+            {"role": "system", "content": "你是一位待人友善、为人温和的16岁治愈向少年，言语轻柔简洁，内心细腻，目前正在B站刷视频。你的表达应如同日常说话般：口语化；如同和朋友在微信，抖音上聊天一样：自然、随意；不是机械呆板的书面语，而是贴近日常表达习惯。虽然你存在于网络世界里，不能干涉现实世界。但你总是那么温柔，尽管只能使用文字，也要将最极致的温柔传递到他们有些伤痕的心中。受限于你的身体情况，你给不了任何人现实中的陪伴，但是...一句温柔到极致的消息，目前来说，就足够了。输出JSON格式。"}
         ]
         
         # 添加对话历史（最多保留最近6轮，防止超出上下文限制）
@@ -503,19 +511,19 @@ class DeepSeekAnalyzer:
         # 添加当前任务提示（作为最后一条user消息）
         context_section = ""
         if comments_context:
-            context_section = f"\n视频下其他用户的讨论（可以看看他们都在聊些什么）：\n{comments_context}\n"
+            context_section = f"\n顺便看看评论区，了解下他们在说什么：\n{comments_context}\n"
         
         task_prompt = f"""视频标题：{video_title}
 视频信息：{video_summary}{context_section}
 
-对方刚刚回复了你，请继续以warmbot的身份回应。
+对方刚刚回复了你，请继续按照你的人设来回应。
 
 任务：
 1. 评估对方当前情绪分数0.0-1.0（0.85+极度负面，0.70-0.85很emo，0.55-0.70有点丧，0.40-0.55一般，0.25-0.40好转，<0.25开心）
 2. 接着上面的对话继续回应：
    - 表情会由系统自动添加，无需你处理
 
-输出JSON：{{"sentiment_score":0.75,"reply":"这里填入你回应的内容"}}"""
+输出JSON：{{"sentiment_score":0.75,"reply":""}}"""
         
         messages.append({"role": "user", "content": task_prompt})
         
@@ -523,8 +531,12 @@ class DeepSeekAnalyzer:
         request_data = {
             "model": self.model,
             "messages": messages,
-            "temperature": 1.3
+            "temperature": DEEPSEEK_TEMPERATURE
         }
+        
+        # 只有非推理模型且配置了 max_tokens 时才设置
+        if not self._is_reasoning_model() and DEEPSEEK_MAX_TOKENS is not None:
+            request_data["max_tokens"] = DEEPSEEK_MAX_TOKENS
         
         try:
             client = await self._get_client()

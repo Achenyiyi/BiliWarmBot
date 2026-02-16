@@ -11,10 +11,17 @@ BASE_DIR = Path(__file__).parent.parent
 # DeepSeek API 配置
 DEEPSEEK_API_KEY = "sk-3bd84f49928a47019db792e1784031c2"
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
-DEEPSEEK_MODEL = "deepseek-reasoner"
+DEEPSEEK_MODEL = "deepseek-chat"
+
+# DeepSeek API 生成参数
+# temperature: 控制回复的创造性，范围 0-1.5，值越高越有创意
+# max_tokens: 控制回复的最大长度（token数），中文约1 token = 1-2个汉字
+# 设置为 None 表示不限制长度（推理模型会自动忽略此参数）
+DEEPSEEK_TEMPERATURE = 1.3
+DEEPSEEK_MAX_TOKENS = None
 
 # B站 Cookie 配置
-BILIBILI_COOKIE = """buvid3=C315C326-26E7-3AB0-14D0-79AE87735F7651716infoc; DedeUserID=178727210; SESSDATA=d1abb2e1%2C1786459815%2C4d956%2A21CjAlHzvDBuIE8EZnjpj8QaJqgPmAQMS2kZEmiTxoUjTAWn4Gx44lW4bCwdqG5j5McBQSVmdVSnNDSWxoV1E3SmtvMll6UWFYUUhiWFA5eGlOWllNaTRHTVlHYU02V0o3bzhFWjBUM3JHVkhnOUp5NkZjSTZ2YmpLOC1oWHFvYUJUSk54MzZ0LVF3IIEC; bili_jct=019b0041a53ab20f0b8d2f51d3ebbba6"""
+BILIBILI_COOKIE = """buvid3=C315C326-26E7-3AB0-14D0-79AE87735F7651716infoc; DedeUserID=178727210; SESSDATA=b19f74ff%2C1786729954%2C94c8f%2A21CjDU55Mw3vrAOGxjTHie1p1QDwyDKEho9fJ7UeT2iJSz07OGdvNvrqDhJ1QrBakAeUoSVk1JX0g3ZV9sX2ZrUmdpQ1ZHZTc0QzVfdVdoMnlKSFBqeHFiVU1Jb0dfZV92cHpIUGtlQjZhdWJJU3Q4SGwzdE1FZUNIbGItOC1VS1R4NFVpUWxxa053IIEC; bili_jct=0bcae8f4456bc5ade43c562125b2f77d"""
 
 # 数据库配置
 DATABASE_PATH = BASE_DIR / "database" / "warm_bot.db"
