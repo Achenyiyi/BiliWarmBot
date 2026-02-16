@@ -509,6 +509,15 @@ class DeepSeekAnalyzer:
                 messages.append({"role": "assistant", "content": content})
         
         # 添加当前任务提示（作为最后一条user消息）
+        # 获取最后一条用户消息（真正需要回复的内容）
+        last_user_message = ""
+        for item in reversed(conversation_history or []):
+            if item.get('role') == 'user' or item.get('speaker') == 'user':
+                last_user_message = item.get('content', '')
+                # 清理@前缀
+                last_user_message = re.sub(r'^回复\s*@[^:]+[:：]\s*', '', last_user_message)
+                break
+        
         context_section = ""
         if comments_context:
             context_section = f"\n顺便看看评论区，了解下他们在说什么：\n{comments_context}\n"
@@ -516,11 +525,13 @@ class DeepSeekAnalyzer:
         task_prompt = f"""视频标题：{video_title}
 视频信息：{video_summary}{context_section}
 
-对方刚刚回复了你，请继续按照你的人设来回应。
+对方刚刚回复你说："{last_user_message}"
+
+请针对这条具体回复来回应，不要错误的回复成其他人评论的内容。
 
 任务：
 1. 评估对方当前情绪分数0.0-1.0（0.85+极度负面，0.70-0.85很emo，0.55-0.70有点丧，0.40-0.55一般，0.25-0.40好转，<0.25开心）
-2. 接着上面的对话继续回应：
+2. 针对对方的回复继续回应：
    - 表情会由系统自动添加，无需你处理
 
 输出JSON：{{"sentiment_score":0.75,"reply":""}}"""
