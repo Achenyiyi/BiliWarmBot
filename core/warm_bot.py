@@ -561,6 +561,11 @@ class WarmBot:
             if last_reply_time:
                 if isinstance(last_reply_time, str):
                     last_reply_time = datetime.fromisoformat(last_reply_time.replace('Z', '+00:00'))
+                    # 如果时间是 naive（无时区），假设为本地时间
+                    if last_reply_time.tzinfo is None:
+                        from datetime import timezone
+                        # 将 UTC 时间转换为本地时间（created_at 存储的是 UTC）
+                        last_reply_time = last_reply_time.replace(tzinfo=timezone.utc).astimezone(tz=None).replace(tzinfo=None)
                 hours_since_last_reply = (datetime.now() - last_reply_time).total_seconds() / 3600
                 
                 if hours_since_last_reply >= CONVERSATION_CONFIG['conversation_retention_hours']:

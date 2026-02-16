@@ -17,7 +17,7 @@ DEEPSEEK_MODEL = "deepseek-chat"
 # temperature: 控制回复的创造性，范围 0-1.5，值越高越有创意
 # max_tokens: 控制回复的最大长度（token数），中文约1 token = 1-2个汉字
 # 设置为 None 表示不限制长度（推理模型会自动忽略此参数）
-DEEPSEEK_TEMPERATURE = 1.3
+DEEPSEEK_TEMPERATURE = 0.7
 DEEPSEEK_MAX_TOKENS = None
 
 # B站 Cookie 配置

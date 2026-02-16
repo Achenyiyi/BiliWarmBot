@@ -225,10 +225,11 @@ class DatabaseManager:
     async def get_replied_conversations_to_check(self) -> List[Dict]:
         """获取需要检查的已回复对话（包括replied和paused状态，next_check_at到期）"""
         async with self.get_connection() as conn:
+            # 使用 datetime('now', 'localtime') 确保使用本地时间进行比较
             cursor = await conn.execute(
                 """SELECT * FROM conversations 
-                   WHERE status IN ('replied', 'paused') AND next_check_at <= ?""",
-                (datetime.now(),)
+                   WHERE status IN ('replied', 'paused') 
+                   AND next_check_at <= datetime('now', 'localtime')"""
             )
             rows = await cursor.fetchall()
             result = []
