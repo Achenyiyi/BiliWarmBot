@@ -230,7 +230,7 @@ PERFORMANCE_CONFIG = {
 # 对话配置
 CONVERSATION_CONFIG = {
     "conversation_retention_hours": 24,  # 对话保留时间（小时）
-    "max_check_count": 8,              # 最大检查次数
+    "max_check_count": 8,              # 最大检查次数（此参数也控制给用户最多发送的消息数量）
     "backoff_base_minutes": 30,        # 指数退避基数（分钟）
     "max_check_interval_minutes": 240,   # 最大检查间隔（分钟）
     # 暂停状态配置（人工干预后）

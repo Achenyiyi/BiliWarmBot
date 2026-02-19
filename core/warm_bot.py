@@ -889,7 +889,7 @@ class WarmBot:
             
             # 处理评论
             processed = 0
-            for cmt in replies[:COMMENT_CONFIG.get('max_comments_per_video', 10)]:
+            for cmt in replies[:COMMENT_CONFIG.get('max_replies_per_video', 5)]:
                 if await self._process_comment(bvid, title, cmt):
                     processed += 1
                     await asyncio.sleep(2)

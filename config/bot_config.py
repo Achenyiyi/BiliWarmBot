@@ -23,7 +23,7 @@ SEARCH_CONFIG = {
 
 COMMENT_CONFIG = {
     # 每个视频最大回复数
-    "max_replies_per_video": 5,
+    "max_replies_per_video": 10,
 
     # 数量越多，AI对评论区氛围了解越全面，但会增加API调用时间和token消耗
     "comments_context_count": 30,
