@@ -944,8 +944,10 @@ class WarmBot:
                 comments_context=comments_context
             )
             
-            if not result or not result.get('needs_comfort') or not result.get('reply'):
-                # AI判断不需要安慰，标记为ignored，避免重复处理
+            # 硬编码检查：情感分数必须>=0.55才回复（双保险机制）
+            sentiment_score = result.get('sentiment_score', 0)
+            if not result or not result.get('needs_comfort') or not result.get('reply') or sentiment_score < 0.55:
+                # AI判断不需要安慰，或分数不达标，标记为ignored，避免重复处理
                 await self.db.create_conversation(
                     bvid=bvid,
                     root_comment_id=comment_id,
@@ -954,7 +956,10 @@ class WarmBot:
                     first_message=content,
                     status='ignored'
                 )
-                await self._print(f"      🚫 AI判断无需安慰，已忽略")
+                if sentiment_score < 0.55:
+                    await self._print(f"      🚫 情感分数{sentiment_score:.2f}<0.55，已忽略")
+                else:
+                    await self._print(f"      🚫 AI判断无需安慰，已忽略")
                 return False
             
             # 先创建对话记录，获取 conv_id
