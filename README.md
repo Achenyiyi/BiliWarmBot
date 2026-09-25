@@ -256,6 +256,20 @@ python main.py
 
 按 `Ctrl+C` 停止程序。
 
+### Jev 判断与 DeepSeek 回复生成
+
+首次评论的情感判断和后续对话是否继续回复，均由 Jev `jev-1.13.0` 处理；DeepSeek 只在需要回复时生成文字。Jev 不生成回复内容。程序通过 `httpx` 调用 Jev HTTP API，不增加 Python 版本要求。
+
+在项目根目录创建不提交到 Git 的 `.env`：
+
+```dotenv
+TYPESAFE_API_KEY=your-typesafe-api-key
+DEEPSEEK_API_KEY=your-deepseek-api-key
+BILIBILI_COOKIE=your-bilibili-cookie
+```
+
+`config/bot_config.py` 的 `JEV_FILTER_CONFIG` 配置首次评论的安慰、情绪强度与危机阈值。续聊使用 Jev 的 `reply` / `close` 单选判断。Jev 的中文判断应持续用人工标注样本检查；历史数据库中的 `ignored`、`closed` 状态是旧系统结果，不能直接视为正确标签。
+
 ---
 
 ## ⚙️ 配置说明

@@ -17,6 +17,7 @@ from bilibili_api import search, comment, video
 from bilibili_api.search import SearchObjectType, OrderVideo
 from bilibili_api.comment import CommentResourceType, OrderType
 from bilibili_api.utils.network import Credential
+from bilibili_api.utils.aid_bvid_transformer import bvid2aid
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,7 @@ class CommentInteractor:
         self.credential = credential
         self.db = db_manager
         self.seen_bvids = set()
+        self._no_comment_bvids = set()
     
     async def search_negative_videos(self, keywords: Dict[str, List[str]], 
                                      max_results: int = 20,
@@ -47,6 +49,8 @@ class CommentInteractor:
                                      scene_priority: Dict = None) -> List[Dict]:
         """搜索负面情感视频"""
         videos = []
+        # 每轮重新探测；没有评论的视频后续可能新增评论。
+        self._no_comment_bvids.clear()
         scene_videos_count = {}
         
         if not scene_priority:
@@ -173,14 +177,16 @@ class CommentInteractor:
                     # 检查是否已在此轮搜索中见过
                     if bvid in self.seen_bvids:
                         continue
+
+                    if bvid in self._no_comment_bvids:
+                        continue
                     
                     # 检查数据库是否已处理过
                     if self.db and await self.db.get_tracked_video(bvid):
                         self.seen_bvids.add(bvid)  # 标记为已见，避免重复检查
                         continue
                     
-                    self.seen_bvids.add(bvid)
-                    new_videos.append({
+                    candidate = {
                         "bvid": bvid,
                         "title": v.get("title", "").replace('<em class="keyword">', "").replace('</em>', ""),
                         "category": category,
@@ -189,7 +195,26 @@ class CommentInteractor:
                         "description": v.get("description", ""),
                         "up_name": v.get("author", ""),
                         "up_mid": v.get("mid", 0)
-                    })
+                    }
+
+                    # 搜索结果的评论数字段只用于快速排除明确为0的情况。
+                    review_count = self._parse_review_count(v.get("video_review"))
+                    if review_count == 0:
+                        self._no_comment_bvids.add(bvid)
+                        continue
+
+                    # 选入结果前获取第一页评论；处理阶段直接复用，避免重复请求。
+                    initial_comments = await self._fetch_initial_comments(bvid)
+                    if initial_comments is None:
+                        # 请求失败不是“没有评论”，不缓存，后续搜索仍可重试。
+                        continue
+                    if not initial_comments.get('replies'):
+                        self._no_comment_bvids.add(bvid)
+                        continue
+                    candidate['_initial_comments'] = initial_comments
+
+                    self.seen_bvids.add(bvid)
+                    new_videos.append(candidate)
                     
                     if len(videos) + len(new_videos) >= max_needed:
                         break
@@ -204,6 +229,31 @@ class CommentInteractor:
                 break
         
         return videos
+
+    @staticmethod
+    def _parse_review_count(value) -> Optional[int]:
+        """解析搜索结果中的评论数；格式异常时返回None并走接口探测。"""
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    async def _fetch_initial_comments(self, bvid: str) -> Optional[Dict]:
+        """获取视频第一页评论；异常返回None，与确认无评论区分。"""
+        try:
+            result = await comment.get_comments(
+                oid=bvid2aid(bvid),
+                type_=CommentResourceType.VIDEO,
+                page_index=1,
+                order=OrderType.TIME,
+                credential=self.credential
+            )
+            return result if isinstance(result, dict) else None
+        except Exception as e:
+            logger.warning("探测视频评论失败 bvid=%s: %s", bvid, e)
+            return None
     
     async def _search_random(self, keywords: Dict[str, List[str]], 
                             max_results: int, time_range_days: int) -> List[Dict]:

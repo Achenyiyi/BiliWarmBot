@@ -82,6 +82,17 @@ class DatabaseManager:
                 )
             """)
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_bot_comments_bvid ON bot_comments(bvid)")
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS comment_retries (
+                    bvid TEXT NOT NULL,
+                    root_comment_id INTEGER NOT NULL,
+                    title TEXT NOT NULL,
+                    comment_json TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (bvid, root_comment_id)
+                )
+            """)
             
             # 数据库迁移：为已存在的表添加新字段
             try:
@@ -140,6 +151,32 @@ class DatabaseManager:
             await conn.execute(
                 "UPDATE tracked_videos SET total_comments = ? WHERE bvid = ?",
                 (count, bvid)
+            )
+            await conn.commit()
+
+    async def queue_comment_retry(self, bvid: str, title: str, comment: Dict):
+        """保存生成失败的候选评论，供下轮重试。"""
+        async with self.get_connection() as conn:
+            await conn.execute(
+                """INSERT OR REPLACE INTO comment_retries
+                   (bvid, root_comment_id, title, comment_json)
+                   VALUES (?, ?, ?, ?)""",
+                (bvid, comment['rpid'], title, json.dumps(comment, ensure_ascii=False))
+            )
+            await conn.commit()
+
+    async def get_comment_retries(self) -> List[Dict]:
+        async with self.get_connection() as conn:
+            cursor = await conn.execute(
+                "SELECT bvid, root_comment_id, title, comment_json FROM comment_retries ORDER BY created_at"
+            )
+            return [dict(row) for row in await cursor.fetchall()]
+
+    async def delete_comment_retry(self, bvid: str, root_comment_id: int):
+        async with self.get_connection() as conn:
+            await conn.execute(
+                "DELETE FROM comment_retries WHERE bvid = ? AND root_comment_id = ?",
+                (bvid, root_comment_id)
             )
             await conn.commit()
     

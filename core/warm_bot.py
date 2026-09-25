@@ -13,6 +13,7 @@
 """
 
 import asyncio
+import json
 import logging
 import time
 from datetime import datetime, timedelta
@@ -29,7 +30,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import (
     BILIBILI_COOKIE, NEGATIVE_KEYWORDS,
     SEARCH_CONFIG, COMMENT_CONFIG, LOG_FILE, ERROR_LOG_FILE,
-    SCENE_PRIORITY, EMERGENCY_LOG
+    SCENE_PRIORITY, EMERGENCY_LOG, JEV_API_KEY, JEV_FILTER_CONFIG,
+    DEEPSEEK_GENERATION_CONFIG
 )
 from config.bot_config import PERFORMANCE_CONFIG, CONVERSATION_CONFIG
 
@@ -37,6 +39,7 @@ from database.db_manager import DatabaseManager
 from modules.deepseek_analyzer import DeepSeekAnalyzer
 from modules import VideoContentExtractor, CommentInteractor
 from modules.comment_context import CommentContextFetcher
+from modules.jev_filter import JevCommentFilter
 
 from utils.circuit_breaker import bilibili_breaker, deepseek_breaker
 from utils.rate_limiter import bilibili_limiter, deepseek_limiter, comment_limiter
@@ -64,12 +67,14 @@ class WarmBot:
         self.video_extractor: Optional[VideoContentExtractor] = None
         self.comment_interactor: Optional[CommentInteractor] = None
         self.comment_context_fetcher: Optional[CommentContextFetcher] = None
+        self.jev_filter: Optional[JevCommentFilter] = None
         
         # 机器人自己的UID（用于排除自己的回复）
         self.bot_uid: Optional[str] = None
         
         self.running = False
         self._print_lock = asyncio.Lock()
+        self._send_lock = asyncio.Lock()
         self._initialized = False
         
         # 统计
@@ -113,6 +118,10 @@ class WarmBot:
             # 5. 初始化评论区上下文获取器
             self.comment_context_fetcher = CommentContextFetcher(self.credential)
 
+            if not JEV_API_KEY:
+                raise ValueError("Jev 判断需要 TYPESAFE_API_KEY")
+            self.jev_filter = JevCommentFilter(JEV_API_KEY)
+
             # 6. 健康检查
             if not await self._health_check():
                 self.logger.error("❌ 健康检查失败")
@@ -130,6 +139,8 @@ class WarmBot:
     async def cleanup(self):
         """清理资源"""
         self.logger.info("🧹 开始清理资源...")
+        if self.jev_filter:
+            await self.jev_filter.close()
         
         # 关闭分析器（释放HTTP客户端）
         if self.analyzer and hasattr(self.analyzer, 'close'):
@@ -307,12 +318,21 @@ class WarmBot:
         
         # 1. 检查需要跟进的对话（兜底）- 只检查 replied 状态
         await self._check_pending_conversations()
+
+        await self._retry_failed_comments()
         
         # 2. 搜索并处理新视频
         await self._process_new_videos()
         
         # 3. 打印统计
         await self._print_stats()
+
+    async def _retry_failed_comments(self):
+        """重试先前生成失败的候选评论。"""
+        for item in await self.db.get_comment_retries():
+            await self._process_comment(
+                item['bvid'], item['title'], json.loads(item['comment_json'])
+            )
     
     def stop(self):
         """停止机器人"""
@@ -363,8 +383,11 @@ class WarmBot:
             current_round=current_round,
             max_rounds=CONVERSATION_CONFIG['max_check_count']
         )
+
+        latest_rpid = messages[-1].get('rpid') if messages else None
         
         if not should_continue.get('should_reply'):
+            await self.db.add_message(conv_id, 'user', content, rpid=latest_rpid)
             reason = should_continue.get('reason', '未知原因')
             await self._print(f"      🔚 AI判断无需继续对话: {reason}")
             await self.db.update_conversation_status(
@@ -386,11 +409,18 @@ class WarmBot:
                 await self._print(f"      AI未生成回复")
                 return
             
-            await self._send_reply_with_protection(
+            sent = await self._send_reply_with_protection(
                 bvid=bvid, root_id=root_id, parent_id=parent_id,
                 content=reply_text, conv_id=conv_id,
-                username=username, original_content=content
+                username=username, original_content=content,
+                user_rpid=latest_rpid
             )
+            if not sent:
+                await self.db.update_conversation_status(
+                    conv_id=conv_id,
+                    status='replied',
+                    next_check_at=datetime.now() + timedelta(minutes=10)
+                )
             
         except Exception as e:
             self.logger.error(f"生成回复失败: {e}")
@@ -400,20 +430,14 @@ class WarmBot:
                                                 conversation_history: list,
                                                 current_round: int,
                                                 max_rounds: int) -> dict:
-        """在防护下判断是否继续对话"""
-        try:
-            await deepseek_limiter.acquire()
-            return await deepseek_breaker.call(
-                deepseek_retry.execute,
-                self.analyzer.should_continue_conversation,
-                user_reply=user_reply,
-                conversation_history=conversation_history,
-                current_round=current_round,
-                max_rounds=max_rounds
-            )
-        except Exception as e:
-            self.logger.error(f"判断是否继续对话失败: {e}")
-            return {"should_reply": True, "reason": f"判断异常: {e}", "reply": ""}
+        """用 Jev 判断是否继续对话。"""
+        if current_round >= max_rounds:
+            return {"should_reply": False, "reason": "达到最大对话轮数"}
+        result = await self.jev_filter.decide_continue(user_reply, conversation_history)
+        self.logger.info("Jev 续聊判断 reply=%s confidence=%.3f model=%s",
+                         result['should_reply'], result['confidence'], result['model'])
+        return {"should_reply": result['should_reply'],
+                "reason": "用户继续交流" if result['should_reply'] else "用户结束或仅简短回应"}
     
     async def _generate_follow_up_with_protection(self, video_title: str, video_summary: str,
                                                    conversation_history: list,
@@ -433,32 +457,10 @@ class WarmBot:
             self.logger.error(f"AI生成后续回复失败: {e}")
             return None
     
-    async def _analyze_with_protection(self, **kwargs) -> Optional[Dict]:
-        """
-        在防护下调用AI分析
-        
-        使用：
-        - 熔断器
-        - 限流器
-        - 重试机制
-        """
-        try:
-            # 先限流
-            await deepseek_limiter.acquire()
-            
-            # 再熔断保护
-            return await deepseek_breaker.call(
-                deepseek_retry.execute,
-                self.analyzer.analyze_and_reply,
-                **kwargs
-            )
-        except Exception as e:
-            self.logger.error(f"AI分析失败: {e}")
-            return None
-    
     async def _send_reply_with_protection(self, bvid: str, root_id: int, 
                                          parent_id: int, content: str, conv_id: int,
-                                         username: str = "", original_content: str = ""):
+                                         username: str = "", original_content: str = "",
+                                         user_rpid=None):
         """
         在防护下发送回复
         
@@ -467,23 +469,27 @@ class WarmBot:
         - 熔断器
         """
         try:
-            # 评论发送限流（最严格）
-            await comment_limiter.acquire()
-            
-            # 熔断保护
-            await bilibili_breaker.call(
-                self._send_reply_internal,
-                bvid, root_id, parent_id, content, conv_id,
-                username, original_content
-            )
-            
+            # 发送必须串行；DeepSeek 可以并发生成，但 B 站评论不能并发提交。
+            send_lock = getattr(self, '_send_lock', None)
+            if send_lock is None:
+                send_lock = asyncio.Lock()
+            async with send_lock:
+                await comment_limiter.acquire()
+                await bilibili_breaker.call(
+                    self._send_reply_internal,
+                    bvid, root_id, parent_id, content, conv_id,
+                    username, original_content, user_rpid
+                )
+            return True
         except Exception as e:
             self.logger.error(f"发送回复失败: {e}")
             self._stats['errors'].append(f"发送回复: {e}")
+            return False
     
     async def _send_reply_internal(self, bvid: str, root_id: int, parent_id: int,
                                    content: str, conv_id: int,
-                                   username: str = "", original_content: str = ""):
+                                   username: str = "", original_content: str = "",
+                                   user_rpid=None):
         """内部发送回复方法"""
         try:
             # 使用 CommentInteractor 发送回复，支持回复格式
@@ -513,15 +519,17 @@ class WarmBot:
                 status='replied',
                 next_check_at=datetime.now() + timedelta(hours=1)
             )
-            
+
             # 记录消息
+            if user_rpid is not None:
+                await self.db.add_message(conv_id, 'user', original_content, rpid=user_rpid)
             await self.db.add_message(conv_id, 'bot', content, rpid=rpid)
             
             # 显示回复信息（包含用户名和原评论）
             if username and original_content:
-                await self._print(f"      ✅ 已回复 @{username}: 「{original_content[:30]}...」 → 「{content[:30]}...」")
+                await self._print(f"      ✅ 已回复 @{username}: 「{original_content}」 → 「{content}」")
             else:
-                await self._print(f"      ✅ 已回复: {content[:40]}...")
+                await self._print(f"      ✅ 已回复: {content}")
             self._stats['replies_sent'] += 1
             
         except Exception as e:
@@ -599,9 +607,7 @@ class WarmBot:
             # 获取机器人最后一条回复的rpid，用于判断用户是否回复了机器人
             bot_messages = [msg for msg in existing_messages if msg.get('role') == 'bot' and msg.get('rpid')]
             last_bot_rpid = str(bot_messages[-1].get('rpid')) if bot_messages else None
-            
-            # 零宽空格标记，用于区分AI回复和人工回复
-            ZWSP = "\u200B"
+            manual_intervention_detected = False
             
             # 找出用户的新回复（只处理直接回复机器人的）
             new_user_replies = []
@@ -615,20 +621,16 @@ class WarmBot:
                     # 排除机器人自己的回复
                     if user_mid_str and self.bot_uid and user_mid_str == str(self.bot_uid):
                         reply_content = (reply.get('content') or {}).get('message', '')
-                        
-                        # 检查是否包含零宽空格标记
-                        if ZWSP in reply_content:
-                            # AI自动回复，记录并继续监控
+                        # 以数据库中的评论 ID 为准；正文标记可能被 B 站清理。
+                        if await self.db.is_bot_comment(rpid):
                             await self.db.add_message(conv['id'], 'bot', reply_content, rpid=rpid_str)
                         else:
-                            # 人工回复（无零宽空格标记）
-                            # 检查对话历史中是否有过AI回复
-                            has_ai_reply = any(
-                                ZWSP in (msg.get('content', '') or '') 
-                                for msg in existing_messages 
-                                if msg.get('role') == 'bot'
-                            )
-                            
+                            # 人工回复：只要历史中已有机器人评论记录，就暂停自动跟进。
+                            has_ai_reply = False
+                            for msg in bot_messages:
+                                if await self.db.is_bot_comment(msg['rpid']):
+                                    has_ai_reply = True
+                                    break
                             if has_ai_reply:
                                 # AI参与过的对话，人工干预后暂停
                                 await self.db.update_conversation_status(
@@ -636,6 +638,7 @@ class WarmBot:
                                     status='paused',
                                     close_reason='manual_intervention'
                                 )
+                                manual_intervention_detected = True
                                 await self._print(f"   👤 对话 {conv['id']}: 检测到人工干预，已暂停")
                             else:
                                 # 用户自己主动发起的对话，AI直接忽略（关闭）
@@ -664,6 +667,18 @@ class WarmBot:
                             self.logger.debug(f"用户 {reply_username} 回复了非机器人消息(parent={parent_id_raw})，忽略")
                     # 其他用户的回复直接忽略
             
+            if manual_intervention_detected:
+                # 同一批子评论可能同时包含用户回复和人工接管；人工接管优先，
+                # 本轮不再触发 Jev/DeepSeek，也不发送自动回复。
+                for item in new_user_replies:
+                    reply = item['reply']
+                    await self.db.add_message(
+                        conv['id'], 'user',
+                        (reply.get('content') or {}).get('message', ''),
+                        rpid=item['rpid_str']
+                    )
+                return
+
             if new_user_replies:
                 latest_item = new_user_replies[-1]
                 latest_reply = latest_item['reply']
@@ -683,8 +698,7 @@ class WarmBot:
                     for reply in sub_replies:
                         if str(reply.get('rpid')) == user_reply_parent_id:
                             parent_content = (reply.get('content') or {}).get('message', '')
-                            # 检查被回复的消息是否包含零宽空格（AI发的）
-                            if ZWSP in parent_content:
+                            if await self.db.is_bot_comment(user_reply_parent_id):
                                 replied_to_bot = True
                             break
                     
@@ -715,11 +729,8 @@ class WarmBot:
                 
                 await self._print(f"   💬 对话 {conv['id']}: 收到 {len(new_user_replies)} 条新回复")
                 
-                await self.db.add_message(conv['id'], 'user', content, rpid=rpid_str)
-                
-                messages = await self.db.get_conversation_messages(conv['id'])
-                if messages is None:
-                    messages = []
+                messages = list(await self.db.get_conversation_messages(conv['id']) or [])
+                messages.append({'role': 'user', 'content': content, 'rpid': rpid_str})
                 
                 await self._continue_conversation(
                     conv['id'], bvid, root_id, parent_id,
@@ -789,8 +800,8 @@ class WarmBot:
             
         except Exception as e:
             error_msg = str(e)
-            # 检查是否是评论已被删除的错误 (12022)
-            if '12022' in error_msg or '已经被删除' in error_msg:
+            # B站会用 12006/12022 表示根评论已不存在。
+            if '12006' in error_msg or '12022' in error_msg or '已经被删除' in error_msg or '没有该评论' in error_msg:
                 self.logger.warning(f"对话 {conv['id']} 的根评论已被删除，关闭对话")
                 await self.db.close_conversation(conv['id'])
                 await self._print(f"   🗑️ 对话 {conv['id']}: 原评论已被删除，已关闭")
@@ -858,17 +869,21 @@ class WarmBot:
         
         # 追踪视频（搜索阶段已过滤已处理视频，这里直接记录）
         await self.db.track_video(bvid, title)
+        processed = 0
+        replies_count = 0
         
         # 获取评论
         try:
             await bilibili_limiter.acquire()
             
-            comments_data = await comment.get_comments(
-                oid=bvid2aid(bvid),
-                type_=CommentResourceType.VIDEO,
-                order=OrderType.TIME,
-                credential=self.credential
-            )
+            comments_data = video_info.get('_initial_comments')
+            if comments_data is None:
+                comments_data = await comment.get_comments(
+                    oid=bvid2aid(bvid),
+                    type_=CommentResourceType.VIDEO,
+                    order=OrderType.TIME,
+                    credential=self.credential
+                )
             
             # 检查评论数据是否为空
             if not comments_data:
@@ -884,23 +899,98 @@ class WarmBot:
             if not replies:
                 await self._print(f"   视频暂无评论")
                 return
+            replies_count = len(replies)
             
             await self._print(f"   获取到 {len(replies)} 条根评论 (总评论数: {total_comments})")
             
-            # 处理评论
-            processed = 0
-            for cmt in replies[:COMMENT_CONFIG.get('max_replies_per_video', 5)]:
-                if await self._process_comment(bvid, title, cmt):
+            # Jev 判断并发执行。
+            candidates = replies[:COMMENT_CONFIG.get('max_replies_per_video', 5)]
+            jev_limit = asyncio.Semaphore(JEV_FILTER_CONFIG.get('concurrency', 10))
+            jev_results = await asyncio.gather(*[
+                self._decide_comment_with_limit(title, cmt, jev_limit)
+                for cmt in candidates
+            ], return_exceptions=True)
+
+            reply_context = None
+            if any(
+                not isinstance(result, Exception)
+                and (
+                    result['emergency_probability'] >= JEV_FILTER_CONFIG['emergency_threshold']
+                    or (
+                        result['needs_comfort_probability'] >= JEV_FILTER_CONFIG['needs_comfort_threshold']
+                        and result['intensity'] >= JEV_FILTER_CONFIG['intensity_threshold']
+                    )
+                )
+                for result in jev_results
+            ):
+                reply_context = await self._fetch_reply_context(bvid, title)
+
+            # DeepSeek 生成并发执行，B站发送由发送锁和限流器保持串行。
+            deepseek_limit = asyncio.Semaphore(
+                DEEPSEEK_GENERATION_CONFIG.get('concurrency', 5)
+            )
+            tasks = []
+            for cmt, jev_result in zip(candidates, jev_results):
+                if isinstance(jev_result, Exception):
+                    self.logger.error(
+                        "Jev 判断失败 bvid=%s rpid=%s: %s",
+                        bvid, cmt.get('rpid'), jev_result
+                    )
+                    continue
+                tasks.append(self._process_comment(
+                    bvid, title, cmt, jev_result=jev_result,
+                    deepseek_semaphore=deepseek_limit,
+                    reply_context=reply_context
+                ))
+
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for result in results:
+                if isinstance(result, Exception):
+                    self.logger.error("处理评论任务失败 bvid=%s: %s", bvid, result)
+                elif result:
                     processed += 1
-                    await asyncio.sleep(2)
             
             await self._print(f"   处理了 {processed} 条需要回复的评论")
             self._stats['videos_processed'] += 1
             
         except Exception as e:
             self.logger.error(f"处理视频 {bvid} 失败: {e}")
+            self._stats['errors'].append(f"处理视频 {bvid}: {e}")
+            await self._print(f"   ⚠️ 处理视频失败: {type(e).__name__}: {e}")
+            if replies_count:
+                await self._print(f"   处理了 {processed} 条需要回复的评论（视频处理中断）")
     
-    async def _process_comment(self, bvid: str, title: str, cmt: Dict) -> bool:
+    async def _decide_comment_with_limit(self, title: str, cmt: Dict, semaphore) -> dict:
+        async with semaphore:
+            return await self.jev_filter.decide_comment(
+                title, (cmt.get('content') or {}).get('message', '')
+            )
+
+    async def _fetch_reply_context(self, bvid: str, title: str) -> Dict:
+        """为同一视频准备一次共享上下文，避免并发任务重复抓取。"""
+        video_summary = ""
+        try:
+            video_content = await self.video_extractor.extract_video_content(bvid)
+            if video_content and video_content.get('summary'):
+                video_summary = video_content['summary']
+        except Exception as e:
+            self.logger.debug(f"获取视频内容失败: {e}")
+
+        comments_context = ""
+        try:
+            if self.comment_context_fetcher:
+                comments_context = await self.comment_context_fetcher.fetch_video_comments_context(
+                    bvid=bvid,
+                    max_comments=COMMENT_CONFIG.get('comments_context_count', 30),
+                    include_replies=True
+                )
+        except Exception as e:
+            self.logger.debug(f"获取评论区上下文失败: {e}")
+
+        return {'video_summary': video_summary, 'comments_context': comments_context}
+
+    async def _process_comment(self, bvid: str, title: str, cmt: Dict, jev_result: Optional[Dict] = None,
+                               deepseek_semaphore=None, reply_context: Optional[Dict] = None) -> bool:
         """处理单条评论，返回是否已回复（带评论区上下文）"""
         try:
             username = cmt['member']['uname']
@@ -909,92 +999,107 @@ class WarmBot:
             
             # 检查是否已回复（通过对话记录判断）
             existing_conv = await self.db.get_conversation_by_root(bvid, comment_id)
+            retry_conv_id = None
             if existing_conv:
-                return False
-            
-            # 获取视频内容摘要（使用完整逻辑）
-            video_summary = ""
-            try:
-                video_content = await self.video_extractor.extract_video_content(bvid)
-                if video_content and video_content.get('summary'):
-                    video_summary = video_content['summary']
-            except Exception as e:
-                self.logger.debug(f"获取视频内容失败: {e}")
-            
-            # 获取评论区上下文（实时爬取）
-            comments_context = ""
-            try:
-                if self.comment_context_fetcher:
-                    comments_context = await self.comment_context_fetcher.fetch_video_comments_context(
-                        bvid=bvid,
-                        max_comments=COMMENT_CONFIG.get('comments_context_count', 30),
-                        include_replies=True
-                    )
-            except Exception as e:
-                self.logger.debug(f"获取评论区上下文失败: {e}")
-                comments_context = ""
-            
-            # AI分析
-            result = await self._analyze_with_protection(
-                video_title=title,
-                video_summary=video_summary,
-                comment_username=username,
-                comment_content=content,
-                is_emergency=False,
-                comments_context=comments_context
-            )
-            
-            # 硬编码检查：情感分数必须>=0.55才回复（双保险机制）
-            sentiment_score = result.get('sentiment_score', 0)
-            if not result or not result.get('needs_comfort') or not result.get('reply') or sentiment_score < 0.55:
-                # AI判断不需要安慰，或分数不达标，标记为ignored，避免重复处理
-                await self.db.create_conversation(
-                    bvid=bvid,
-                    root_comment_id=comment_id,
-                    user_mid=cmt['member']['mid'],
-                    username=username,
-                    first_message=content,
-                    status='ignored'
-                )
-                if sentiment_score < 0.55:
-                    await self._print(f"      🚫 情感分数{sentiment_score:.2f}<0.55，已忽略")
+                existing_messages = existing_conv.get('messages') or []
+                has_bot_reply = any(msg.get('role') == 'bot' for msg in existing_messages)
+                if existing_conv.get('status') == 'new' and not has_bot_reply:
+                    retry_conv_id = existing_conv['id']
                 else:
-                    await self._print(f"      🚫 AI判断无需安慰，已忽略")
+                    await self.db.delete_comment_retry(bvid, comment_id)
+                    return False
+
+            if jev_result is None:
+                jev_result = await self.jev_filter.decide_comment(title, content)
+            needs_comfort = jev_result['needs_comfort_probability'] >= JEV_FILTER_CONFIG['needs_comfort_threshold']
+            intensity = jev_result['intensity']
+            is_emergency = jev_result['emergency_probability'] >= JEV_FILTER_CONFIG['emergency_threshold']
+            self.logger.info(
+                "Jev 评论判断 bvid=%s rpid=%s model=%s needs=%.3f intensity=%.2f emergency=%.3f emotion=%s",
+                bvid, comment_id, jev_result['model'], jev_result['needs_comfort_probability'],
+                intensity, jev_result['emergency_probability'], jev_result['emotion']
+            )
+            if not (needs_comfort and intensity >= JEV_FILTER_CONFIG['intensity_threshold']) and not is_emergency:
+                await self.db.create_conversation(
+                    bvid=bvid, root_comment_id=comment_id, user_mid=cmt['member']['mid'],
+                    username=username, first_message=content, status='ignored'
+                )
+                await self.db.delete_comment_retry(bvid, comment_id)
+                await self._print("      🚫 Jev 判断无需安慰，已忽略")
                 return False
+            
+            # Jev 完成情感判断后，候选评论共享同一视频上下文。
+            if reply_context is None:
+                reply_context = await self._fetch_reply_context(bvid, title)
+            video_summary = reply_context['video_summary']
+            comments_context = reply_context['comments_context']
+            
+            sentiment_score = max(0.55, min(1.0, 0.55 + (intensity - 2.5) * 0.18))
+            try:
+                if deepseek_semaphore is None:
+                    reply = await self._generate_initial_reply_with_protection(
+                        title, video_summary, username, content, jev_result,
+                        comments_context
+                    )
+                else:
+                    async with deepseek_semaphore:
+                        reply = await self._generate_initial_reply_with_protection(
+                            title, video_summary, username, content, jev_result,
+                            comments_context
+                        )
+            except Exception as e:
+                self.logger.error("首次回复生成失败 bvid=%s rpid=%s: %s", bvid, comment_id, e)
+                await self.db.queue_comment_retry(bvid, title, cmt)
+                return False
+            if not reply:
+                self.logger.warning("首次回复为空 bvid=%s rpid=%s", bvid, comment_id)
+                await self.db.queue_comment_retry(bvid, title, cmt)
+                return False
+            from config.emoji_scenarios import get_emoji_for_emotion, get_emoji_for_sentiment
+            emoji = (get_emoji_for_emotion(jev_result['emotion'], True) if is_emergency else
+                     get_emoji_for_sentiment(sentiment_score, jev_result['emotion']))
+            reply = reply.rstrip("。，！？ ") + emoji
             
             # 先创建对话记录，获取 conv_id
-            conv_id = await self.db.create_conversation(
-                bvid=bvid,
-                root_comment_id=comment_id,
-                user_mid=cmt['member']['mid'],
-                username=username,
-                first_message=content,
-                status='new',
+            conv_id = retry_conv_id or await self.db.create_conversation(
+                bvid=bvid, root_comment_id=comment_id,
+                user_mid=cmt['member']['mid'], username=username,
+                first_message=content, status='new',
                 next_check_at=datetime.now() + timedelta(hours=1)
             )
+            await self.db.delete_comment_retry(bvid, comment_id)
             
             # 发送回复（使用有效的 conv_id）
-            await self._send_reply_with_protection(
+            sent = await self._send_reply_with_protection(
                 bvid=bvid,
                 root_id=comment_id,
                 parent_id=comment_id,
-                content=result['reply'],
+                content=reply,
                 conv_id=conv_id,
                 username=username,
                 original_content=content
             )
+            if not sent:
+                # 保留候选评论，下一周期重试生成和发送。
+                await self.db.queue_comment_retry(bvid, title, cmt)
+                await self.db.update_conversation_status(
+                    conv_id=conv_id,
+                    status='new',
+                    next_check_at=datetime.now() + timedelta(minutes=10)
+                )
+                return False
             
             # 检查是否为紧急情况，如果是则记录
-            if result.get('emergency'):
+            if is_emergency:
                 await self._log_emergency(
                     bvid=bvid,
                     title=title,
                     username=username,
                     user_mid=cmt['member']['mid'],
                     content=content,
-                    reply=result['reply'],
-                    emotion=result.get('emotion', '未知'),
-                    sentiment_score=result.get('sentiment_score', 0)
+                    reply=reply,
+                    emotion=jev_result['emotion'],
+                    sentiment_score=sentiment_score
                 )
             
             return True
@@ -1002,6 +1107,20 @@ class WarmBot:
         except Exception as e:
             self.logger.error(f"处理评论失败: {e}")
             return False
+
+    async def _generate_initial_reply_with_protection(
+        self, title: str, video_summary: str, username: str, content: str,
+        jev_result: Dict, comments_context: str
+    ) -> Optional[str]:
+        await deepseek_limiter.acquire()
+        return await deepseek_breaker.call(
+            deepseek_retry.execute, self.analyzer.generate_initial_reply,
+            video_title=title, video_summary=video_summary,
+            comment_username=username, comment_content=content,
+            emotion=jev_result['emotion'],
+            is_emergency=jev_result['emergency_probability'] >= JEV_FILTER_CONFIG['emergency_threshold'],
+            comments_context=comments_context
+        )
     
     async def _log_emergency(self, bvid: str, title: str, username: str, 
                             user_mid: int, content: str, reply: str,

@@ -4,14 +4,20 @@
 安全提示：此文件包含敏感信息（API密钥、Cookie），请勿提交到公共仓库
 """
 from pathlib import Path
+import os
+from dotenv import load_dotenv
 
 # 项目根目录
 BASE_DIR = Path(__file__).parent.parent
+load_dotenv(BASE_DIR / ".env")
+
+# Jev 密钥仅从环境变量或本地 .env 读取，不提交到 Git。
+JEV_API_KEY = os.getenv("TYPESAFE_API_KEY", "")
 
 # DeepSeek API 配置
-DEEPSEEK_API_KEY = "sk-3bd84f49928a47019db792e1784031c2"
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
-DEEPSEEK_MODEL = "deepseek-chat"
+DEEPSEEK_MODEL = "deepseek-flash"
 
 # DeepSeek API 生成参数
 # temperature: 控制回复的创造性，范围 0-1.5，值越高越有创意
@@ -21,7 +27,7 @@ DEEPSEEK_TEMPERATURE = 0.7
 DEEPSEEK_MAX_TOKENS = None
 
 # B站 Cookie 配置
-BILIBILI_COOKIE = """buvid3=C315C326-26E7-3AB0-14D0-79AE87735F7651716infoc; DedeUserID=178727210; SESSDATA=cc35086a%2C1787324584%2Cc8d47%2A21CjDr2ZEO98BwBQ6IdHhaPLsgPw42sEwnhO1OmrfZXEQM9v3ZHt1dQuKTjMzLsiH0feUSVjFPeU5jbkotczIyYXcwV0QzZjYydzI1bkM1Q2JENHdic1dyNXM1M2dCLVlKSjFtel9MQkNhSDk2anNCbHQ2T2JwVmlDZnF1cHdTTjVkSy1uNXVHZ3ZRIIEC; bili_jct=712d94018695337b11344a0410344386"""
+BILIBILI_COOKIE = os.getenv("BILIBILI_COOKIE", "")
 
 # 数据库配置
 DATABASE_PATH = BASE_DIR / "database" / "warm_bot.db"
@@ -38,6 +44,8 @@ from config.bot_config import (
     COMMENT_CONFIG,
     PERFORMANCE_CONFIG,
     CONVERSATION_CONFIG,
+    JEV_FILTER_CONFIG,
+    DEEPSEEK_GENERATION_CONFIG,
 )
 
 # ============================================================================

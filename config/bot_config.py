@@ -29,6 +29,20 @@ COMMENT_CONFIG = {
     "comments_context_count": 30,
 }
 
+# Jev 负责评论情感与续聊判断，DeepSeek 仅生成回复文字。
+JEV_FILTER_CONFIG = {
+    "needs_comfort_threshold": 0.50,
+    "intensity_threshold": 2.5,
+    "emergency_threshold": 0.30,
+    # 单个视频内 Jev 判断的最大并发数。
+    "concurrency": 10,
+}
+
+# DeepSeek 只并发生成文字；B站发送仍保持串行。
+DEEPSEEK_GENERATION_CONFIG = {
+    "concurrency": 5,
+}
+
 
 # ============================================================================
 # 3. 性能限制配置
