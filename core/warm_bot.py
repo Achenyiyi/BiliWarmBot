@@ -549,10 +549,25 @@ class WarmBot:
                 return
             
             await self._print(f"   发现 {len(conversations)} 个对话需要检查")
-            
-            for conv in conversations:
-                await self._check_conversation_updates(conv)
-                await asyncio.sleep(2)
+
+            # 各对话相互独立：并发拉取子评论，并发执行 Jev 续聊判断，
+            # 由信号量控制对 B 站和 AI 服务的瞬时压力。
+            concurrency = max(1, int(CONVERSATION_CONFIG.get('check_concurrency', 10)))
+            check_limit = asyncio.Semaphore(concurrency)
+
+            async def check_one(conv):
+                async with check_limit:
+                    try:
+                        await self._check_conversation_updates(conv)
+                    except Exception as exc:
+                        self.logger.error("检查对话 %s 失败: %s", conv.get('id'), exc)
+                        self._stats['errors'].append(f"检查对话 {conv.get('id')}: {exc}")
+
+            results = await asyncio.gather(*(check_one(conv) for conv in conversations),
+                                           return_exceptions=True)
+            for conv, result in zip(conversations, results):
+                if isinstance(result, Exception):
+                    self.logger.error("待跟进任务异常退出，对话 %s: %s", conv.get('id'), result)
                 
         except Exception as e:
             self.logger.error(f"检查对话失败: {e}")

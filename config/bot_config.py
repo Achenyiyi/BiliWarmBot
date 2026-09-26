@@ -50,7 +50,7 @@ DEEPSEEK_GENERATION_CONFIG = {
 
 PERFORMANCE_CONFIG = {
     # 扫描间隔（分钟）
-    "scan_interval_minutes": 10,
+    "scan_interval_minutes": 90,
 }
 
 # ============================================================================
@@ -58,6 +58,9 @@ PERFORMANCE_CONFIG = {
 # ============================================================================
 
 CONVERSATION_CONFIG = {
+    # 待跟进对话检查的最大并发数（包含 B 站拉取与 Jev 续聊判断）
+    "check_concurrency": 10,
+
     # 对话保留时间（小时）- 超过此时间未回复则关闭对话
     "conversation_retention_hours": 24,
     
