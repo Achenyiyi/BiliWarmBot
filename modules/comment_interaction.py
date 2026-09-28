@@ -242,6 +242,8 @@ class CommentInteractor:
 
     async def _fetch_initial_comments(self, bvid: str) -> Optional[Dict]:
         """获取视频第一页评论；异常返回None，与确认无评论区分。"""
+        # 限速：探测请求间隔随机 1.5~3 秒，避免高频触发风控(412)
+        await asyncio.sleep(random.uniform(1.5, 3.0))
         try:
             result = await comment.get_comments(
                 oid=bvid2aid(bvid),
