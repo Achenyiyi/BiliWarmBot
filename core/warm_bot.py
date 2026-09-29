@@ -31,7 +31,8 @@ from config import (
     BILIBILI_COOKIE, NEGATIVE_KEYWORDS,
     SEARCH_CONFIG, COMMENT_CONFIG, LOG_FILE, ERROR_LOG_FILE,
     SCENE_PRIORITY, EMERGENCY_LOG, JEV_API_KEY, JEV_FILTER_CONFIG,
-    DEEPSEEK_GENERATION_CONFIG
+    DEEPSEEK_GENERATION_CONFIG, BILIBILI_GUARD_STATE,
+    BILIBILI_MIN_REQUEST_INTERVAL, BILIBILI_COOLDOWN_SECONDS
 )
 from config.bot_config import PERFORMANCE_CONFIG, CONVERSATION_CONFIG
 
@@ -44,6 +45,11 @@ from modules.jev_filter import JevCommentFilter
 from utils.circuit_breaker import bilibili_breaker, deepseek_breaker
 from utils.rate_limiter import bilibili_limiter, deepseek_limiter, comment_limiter
 from utils.retry_handler import bilibili_retry, deepseek_retry
+from utils.bilibili_guard import (
+    BilibiliRiskError,
+    BilibiliNonRetryableError,
+    install_bilibili_guard,
+)
 
 
 class WarmBot:
@@ -101,6 +107,8 @@ class WarmBot:
         """
         try:
             self.logger.info("🔧 开始初始化组件...")
+            install_bilibili_guard(BILIBILI_GUARD_STATE, BILIBILI_MIN_REQUEST_INTERVAL,
+                                   BILIBILI_COOLDOWN_SECONDS)
             
             # 1. 初始化数据库
             self.db = DatabaseManager()
@@ -316,13 +324,17 @@ class WarmBot:
         await self._print("🚀 温暖陪伴机器人启动")
         await self._print(f"{'='*60}")
         
-        # 1. 检查需要跟进的对话（兜底）- 只检查 replied 状态
-        await self._check_pending_conversations()
-
-        await self._retry_failed_comments()
-        
-        # 2. 搜索并处理新视频
-        await self._process_new_videos()
+        try:
+            # 1. 检查需要跟进的对话（兜底）- 只检查 replied 状态
+            await self._check_pending_conversations()
+            await self._retry_failed_comments()
+            # 2. 搜索并处理新视频
+            await self._process_new_videos()
+        except BilibiliRiskError as exc:
+            self.logger.error("Bilibili 风控触发，本轮立即停止: %s", exc)
+            await self._print(f"   ⛔ B站风控触发，本轮已停止: {exc}")
+            self._stats['errors'].append(f"Bilibili 风控: {exc}")
+            return
         
         # 3. 打印统计
         await self._print_stats()
@@ -481,6 +493,11 @@ class WarmBot:
                     username, original_content, user_rpid
                 )
             return True
+        except BilibiliRiskError:
+            raise
+        except BilibiliNonRetryableError as e:
+            self.logger.warning("评论发送不可重试 bvid=%s: %s", bvid, e)
+            raise
         except Exception as e:
             self.logger.error(f"发送回复失败: {e}")
             self._stats['errors'].append(f"发送回复: {e}")
@@ -559,6 +576,8 @@ class WarmBot:
                 async with check_limit:
                     try:
                         await self._check_conversation_updates(conv)
+                    except BilibiliRiskError:
+                        raise
                     except Exception as exc:
                         self.logger.error("检查对话 %s 失败: %s", conv.get('id'), exc)
                         self._stats['errors'].append(f"检查对话 {conv.get('id')}: {exc}")
@@ -566,9 +585,13 @@ class WarmBot:
             results = await asyncio.gather(*(check_one(conv) for conv in conversations),
                                            return_exceptions=True)
             for conv, result in zip(conversations, results):
+                if isinstance(result, BilibiliRiskError):
+                    raise result
                 if isinstance(result, Exception):
                     self.logger.error("待跟进任务异常退出，对话 %s: %s", conv.get('id'), result)
                 
+        except BilibiliRiskError:
+            raise
         except Exception as e:
             self.logger.error(f"检查对话失败: {e}")
             self._stats['errors'].append(f"检查对话: {e}")
@@ -854,6 +877,8 @@ class WarmBot:
                 await self._process_video(video_info)
                 await asyncio.sleep(3)
                 
+        except BilibiliRiskError:
+            raise
         except Exception as e:
             self.logger.error(f"处理新视频失败: {e}")
             self._stats['errors'].append(f"处理新视频: {e}")
@@ -871,6 +896,8 @@ class WarmBot:
                 max_results=SEARCH_CONFIG.get('max_videos_per_scan', 5),
                 time_range_days=SEARCH_CONFIG.get('time_range_days', 7)
             )
+        except BilibiliRiskError:
+            raise
         except Exception as e:
             self.logger.error(f"搜索视频失败: {e}")
             return []
@@ -961,6 +988,8 @@ class WarmBot:
             results = await asyncio.gather(*tasks, return_exceptions=True)
             for result in results:
                 if isinstance(result, Exception):
+                    if isinstance(result, BilibiliRiskError):
+                        raise result
                     self.logger.error("处理评论任务失败 bvid=%s: %s", bvid, result)
                 elif result:
                     processed += 1
@@ -968,6 +997,8 @@ class WarmBot:
             await self._print(f"   处理了 {processed} 条需要回复的评论")
             self._stats['videos_processed'] += 1
             
+        except BilibiliRiskError:
+            raise
         except Exception as e:
             self.logger.error(f"处理视频 {bvid} 失败: {e}")
             self._stats['errors'].append(f"处理视频 {bvid}: {e}")
@@ -988,6 +1019,8 @@ class WarmBot:
             video_content = await self.video_extractor.extract_video_content(bvid)
             if video_content and video_content.get('summary'):
                 video_summary = video_content['summary']
+        except BilibiliRiskError:
+            raise
         except Exception as e:
             self.logger.debug(f"获取视频内容失败: {e}")
 
@@ -999,6 +1032,8 @@ class WarmBot:
                     max_comments=COMMENT_CONFIG.get('comments_context_count', 30),
                     include_replies=True
                 )
+        except BilibiliRiskError:
+            raise
         except Exception as e:
             self.logger.debug(f"获取评论区上下文失败: {e}")
 
@@ -1119,6 +1154,11 @@ class WarmBot:
             
             return True
             
+        except BilibiliRiskError:
+            raise
+        except BilibiliNonRetryableError as e:
+            self.logger.warning("跳过不可回复评论 bvid=%s: %s", bvid, e)
+            return False
         except Exception as e:
             self.logger.error(f"处理评论失败: {e}")
             return False

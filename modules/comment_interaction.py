@@ -18,6 +18,7 @@ from bilibili_api.search import SearchObjectType, OrderVideo
 from bilibili_api.comment import CommentResourceType, OrderType
 from bilibili_api.utils.network import Credential
 from bilibili_api.utils.aid_bvid_transformer import bvid2aid
+from utils.bilibili_guard import BilibiliRiskError, BilibiliNonRetryableError
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +135,8 @@ class CommentInteractor:
                 )
                 videos.extend(keyword_videos)
                 await asyncio.sleep(0.3)
+            except BilibiliRiskError:
+                raise
             except Exception as e:
                 error_msg = str(e)
                 if "412" in error_msg:
@@ -225,6 +228,8 @@ class CommentInteractor:
                 page += 1
                 await asyncio.sleep(0.3)
                 
+            except BilibiliRiskError:
+                raise
             except Exception:
                 break
         
@@ -253,6 +258,8 @@ class CommentInteractor:
                 credential=self.credential
             )
             return result if isinstance(result, dict) else None
+        except BilibiliRiskError:
+            raise
         except Exception as e:
             logger.warning("探测视频评论失败 bvid=%s: %s", bvid, e)
             return None
@@ -278,6 +285,8 @@ class CommentInteractor:
                 )
                 videos.extend(keyword_videos)
                 await asyncio.sleep(0.3)
+            except BilibiliRiskError:
+                raise
             except Exception:
                 continue
         
@@ -414,12 +423,20 @@ class CommentInteractor:
                 
                 error_msg = result.get('message', '未知错误')
                 self._handle_comment_error(code, error_msg)
+                if code in {12045, 12002, 12022, 12061}:
+                    raise BilibiliNonRetryableError(
+                        f"评论操作不可重试 [{code}]: {error_msg}"
+                    )
                 return None
             
             logger.error(f"返回数据格式无法识别: {list(result.keys())[:10]}")
             return None
             
+        except BilibiliRiskError:
+            raise
         except Exception as e:
+            if any(token in str(e) for token in ("12045", "12002", "12022", "12061")):
+                raise BilibiliNonRetryableError(str(e)) from e
             self._handle_comment_exception(str(e))
             return None
     

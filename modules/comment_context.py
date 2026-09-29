@@ -16,6 +16,7 @@ from bilibili_api import comment, video
 from bilibili_api.comment import CommentResourceType, OrderType
 from bilibili_api.utils.network import Credential
 from bilibili_api.utils.aid_bvid_transformer import bvid2aid
+from utils.bilibili_guard import BilibiliRiskError
 
 
 class CommentContextFetcher:
@@ -65,6 +66,8 @@ class CommentContextFetcher:
             
             return formatted_context
             
+        except BilibiliRiskError:
+            raise
         except Exception as e:
             print(f"获取评论区上下文失败 BV{bvid}: {e}")
             return ""
@@ -135,6 +138,8 @@ class CommentContextFetcher:
             
             return all_comments[:max_comments]
             
+        except BilibiliRiskError:
+            raise
         except Exception as e:
             print(f"获取评论失败: {e}")
             return all_comments
@@ -190,6 +195,8 @@ class CommentContextFetcher:
             
             return sub_comments
             
+        except BilibiliRiskError:
+            raise
         except Exception as e:
             print(f"获取子评论失败 rpid={parent_rpid}: {e}")
             return sub_comments

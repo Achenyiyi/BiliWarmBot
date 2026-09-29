@@ -125,6 +125,7 @@ dmypy.json
 # Project specific
 *.db
 *.db-journal
+database/bilibili_guard.json
 logs/
 *.log
 config/settings_local.py

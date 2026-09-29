@@ -20,6 +20,7 @@ import httpx
 from typing import Optional, Dict
 from bilibili_api import video, comment, Credential
 from bilibili_api.comment import CommentResourceType
+from utils.bilibili_guard import BilibiliRiskError
 
 
 class VideoContentExtractor:
@@ -82,6 +83,8 @@ class VideoContentExtractor:
             
             return None
             
+        except BilibiliRiskError:
+            raise
         except Exception:
             return None
     
@@ -150,6 +153,8 @@ class VideoContentExtractor:
             
             return None
             
+        except BilibiliRiskError:
+            raise
         except Exception:
             return None
     
@@ -186,6 +191,8 @@ class VideoContentExtractor:
                 "reply": info.get("stat", {}).get("reply")
             }
             
+        except BilibiliRiskError:
+            raise
         except Exception:
             return {}
     
@@ -260,6 +267,8 @@ class VideoContentExtractor:
             
             return None
             
+        except BilibiliRiskError:
+            raise
         except Exception:
             return None
     

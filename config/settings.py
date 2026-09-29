@@ -37,6 +37,9 @@ LOG_DIR = BASE_DIR / "logs"
 LOG_FILE = LOG_DIR / "bot.log"
 ERROR_LOG_FILE = LOG_DIR / "errors.log"
 EMERGENCY_LOG = LOG_DIR / "emergency.txt"
+BILIBILI_GUARD_STATE = BASE_DIR / "database" / "bilibili_guard.json"
+BILIBILI_MIN_REQUEST_INTERVAL = 1.2
+BILIBILI_COOLDOWN_SECONDS = 24 * 60 * 60
 
 # 从bot_config.py导入配置
 from config.bot_config import (
