@@ -425,6 +425,7 @@ CREATE TABLE bot_comments (
 ## 🙏 致谢
 
 - [bilibili-api](https://github.com/nemo2011/bilibili-api) - Bilibili API Python 封装
+- [Jev](https://typesafe.ai/) - 情感与对话续聊判断模型
 - [DeepSeek](https://deepseek.com/) - 国产大语言模型
 
 ---
