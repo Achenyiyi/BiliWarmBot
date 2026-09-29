@@ -975,8 +975,8 @@ class WarmBot:
             for cmt, jev_result in zip(candidates, jev_results):
                 if isinstance(jev_result, Exception):
                     self.logger.error(
-                        "Jev 判断失败 bvid=%s rpid=%s: %s",
-                        bvid, cmt.get('rpid'), jev_result
+                        "Jev 判断失败 bvid=%s rpid=%s error_type=%s error=%r",
+                        bvid, cmt.get('rpid'), type(jev_result).__name__, jev_result,
                     )
                     continue
                 tasks.append(self._process_comment(
@@ -1098,7 +1098,10 @@ class WarmBot:
                             comments_context
                         )
             except Exception as e:
-                self.logger.error("首次回复生成失败 bvid=%s rpid=%s: %s", bvid, comment_id, e)
+                self.logger.error(
+                    "首次回复生成失败 bvid=%s rpid=%s error_type=%s error=%r",
+                    bvid, comment_id, type(e).__name__, e,
+                )
                 await self.db.queue_comment_retry(bvid, title, cmt)
                 return False
             if not reply:

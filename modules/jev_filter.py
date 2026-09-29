@@ -2,17 +2,22 @@
 
 import httpx
 import asyncio
+import random
+import logging
 
 
 class JevCommentFilter:
     API_URL = "https://api.typesafe.ai/v1/systemone"
     MODEL = "jev-1.13.0"
+    MAX_RETRIES = 2
+    RETRY_BASE_DELAY = 0.8
 
     def __init__(self, api_key: str, client=None):
         self.api_key = api_key
         self._client = client
         self._owns_client = client is None
         self._client_lock = asyncio.Lock()
+        self.logger = logging.getLogger(__name__)
 
     async def close(self):
         if self._owns_client and self._client is not None:
@@ -104,9 +109,44 @@ class JevCommentFilter:
         if self._client is None:
             async with self._client_lock:
                 if self._client is None:
-                    self._client = httpx.AsyncClient(timeout=15.0)
-        response = await self._client.post(self.API_URL,
-                                           headers={"Authorization": "Bearer " + self.api_key},
-                                           json=payload)
-        response.raise_for_status()
-        return response.json()
+                    self._client = httpx.AsyncClient(
+                        timeout=httpx.Timeout(connect=5.0, read=30.0, write=10.0, pool=5.0),
+                        http2=False,
+                    )
+
+        last_error = None
+        for attempt in range(self.MAX_RETRIES + 1):
+            try:
+                response = await self._client.post(
+                    self.API_URL,
+                    headers={"Authorization": "Bearer " + self.api_key},
+                    json=payload,
+                )
+                # 参数/鉴权类 4xx 不重试；限流和服务端错误允许短暂退避。
+                if response.status_code == 429 or response.status_code >= 500:
+                    response.raise_for_status()
+                response.raise_for_status()
+                return response.json()
+            except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
+                last_error = exc
+            except httpx.HTTPStatusError as exc:
+                last_error = exc
+                status = exc.response.status_code if exc.response is not None else None
+                if status != 429 and (status is None or status < 500):
+                    raise
+            except (ValueError, TypeError):
+                # 响应格式错误通常不是瞬时网络问题，直接交给上层记录。
+                raise
+
+            if attempt >= self.MAX_RETRIES:
+                break
+            delay = min(8.0, self.RETRY_BASE_DELAY * (2 ** attempt))
+            delay *= random.uniform(0.8, 1.2)
+            self.logger.warning(
+                "Jev 请求失败，将重试 attempt=%d/%d error_type=%s error=%r",
+                attempt + 1, self.MAX_RETRIES + 1, type(last_error).__name__, last_error,
+            )
+            await asyncio.sleep(delay)
+
+        assert last_error is not None
+        raise last_error

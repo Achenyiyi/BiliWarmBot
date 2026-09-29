@@ -15,6 +15,7 @@
 import asyncio
 import random
 import time
+import httpx
 from typing import Optional, List, Type, Callable, Any
 from dataclasses import dataclass
 from functools import wraps
@@ -37,6 +38,9 @@ class RetryConfig:
                 ConnectionError,
                 TimeoutError,
                 asyncio.TimeoutError,
+                httpx.RequestError,
+                httpx.TimeoutException,
+                httpx.RemoteProtocolError,
             ]
 
 
@@ -98,7 +102,10 @@ class RetryHandler:
                     delay = self._calculate_delay(attempt)
                     self.retry_count += 1
                     
-                    print(f"⚠️  {self.name} 尝试{attempt + 1}/{self.config.max_retries + 1}失败: {str(e)[:50]}...")
+                    print(
+                        f"⚠️  {self.name} 尝试{attempt + 1}/{self.config.max_retries + 1}失败: "
+                        f"{type(e).__name__}: {e!r}"
+                    )
                     print(f"    {delay:.1f}秒后重试...")
                     
                     await asyncio.sleep(delay)
@@ -120,7 +127,8 @@ class RetryHandler:
         error_msg = str(exception).lower()
         retryable_keywords = [
             'timeout', 'connection', 'temporary', 'unavailable',
-            'rate limit', 'too many requests', '503', '502', '504'
+            'disconnected', 'remoteprotocol', 'readerror', 'server disconnected',
+            'rate limit', 'too many requests', '429', '500', '502', '503', '504'
         ]
         
         for keyword in retryable_keywords:

@@ -64,14 +64,16 @@ class DeepSeekAnalyzer:
                 )
                 timeout = httpx.Timeout(
                     connect=5.0,
-                    read=30.0,
+                    read=60.0,
                     write=10.0,
                     pool=5.0
                 )
                 self._client = httpx.AsyncClient(
                     limits=limits,
                     timeout=timeout,
-                    http2=True
+                    # DeepSeek 偶发 Server disconnected 多发生在 HTTP/2 连接复用链路。
+                    # 使用 HTTP/1.1 仍保持连接池，但避免该链路级断连。
+                    http2=False
                 )
             return self._client
     
